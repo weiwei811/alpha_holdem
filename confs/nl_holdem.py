@@ -2,12 +2,12 @@
     'env': 'NlHoldemEnvWithOpponent',
     'sample_batch_size': 50,
     'train_batch_size': 1000,
-    'num_workers': 89,
+    'num_workers': 1,
     'num_envs_per_worker': 1,
     #'broadcast_interval': 5,
     #'max_sample_requests_in_flight_per_worker': 1,
     #'num_data_loader_buffers': 4,
-    'num_gpus': 1,
+    'num_gpus': 0,
     'gamma': 1,
     'entropy_coeff': 1e-1,
     'lr': 3e-4,
@@ -27,6 +27,7 @@
             'use_history': True,
             'use_cardnum': True,
             'history_len': 20,
+            'num_players': 6,
         },
     }
 }

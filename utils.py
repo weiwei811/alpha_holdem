@@ -1,7 +1,6 @@
 # define dataset class to feed the model
 import numpy as np 
 import os
-import cv2
 import sys
 import time
 import pandas as pd

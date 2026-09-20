@@ -24,10 +24,10 @@ class NlHoldemNet(TFModelV2):
             shape=(4, 13, 6), name="card_info")
         
         input_action_info = tf.keras.layers.Input(
-            shape=(4, 5, 25), name="action_info")
+            shape=(8, 5, 81), name="action_info")
         
         input_extra_info = tf.keras.layers.Input(
-            shape=(2,), name="extra_info")
+            shape=(6,), name="extra_info")
         
         # card conv
         x = input_card_info
@@ -83,7 +83,7 @@ class NlHoldemNet(TFModelV2):
             16,
             name="extra_fc",
             activation=tf.nn.relu,
-            kernel_initializer=normc_initializer(0.01))(last_layer_card)
+            kernel_initializer=normc_initializer(0.01))(input_extra_info)
         
         feature_fuse = tf.keras.layers.Concatenate(axis=-1)([last_layer_card,last_layer_history,last_layer_extra])
         

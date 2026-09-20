@@ -28,6 +28,7 @@
             'use_history': True,
             'use_cardnum': True,
             'history_len': 20,
+            'num_players': 6,
         },
     }
 }

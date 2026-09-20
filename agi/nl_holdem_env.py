@@ -23,6 +23,8 @@ class NlHoldemEnvWrapper():
             'no-limit-holdem',
             config={
                 'seed': seed,
+                'game_num_players': 6,
+                'allow_num_players': 6,
             }
         )
         set_seed(seed)
@@ -31,8 +33,8 @@ class NlHoldemEnvWrapper():
         
         space = {
                 'card_info': spaces.Box(low=-1024, high=1024, shape=(4,13,6)),
-                'action_info': spaces.Box(low=-256, high=256, shape=(4,self.action_num,4 * 6 + 1)),
-                'extra_info': spaces.Box(low=-256, high=256, shape=(2,)),
+                'action_info': spaces.Box(low=-256, high=256, shape=(8,self.action_num,4 * 20 + 1)),
+                'extra_info': spaces.Box(low=-256, high=256, shape=(6,)),
                 'legal_moves': spaces.Box(
                     low=-1,
                     high=1,
@@ -51,8 +53,8 @@ class NlHoldemEnvWrapper():
 
     def _get_observation(self,obs):
         card_info = np.zeros([4,13,6],np.uint8)
-        action_info = np.zeros([4,self.action_num,4 * 6 + 1],np.uint8) # 25 channel
-        extra_info = np.zeros([2],np.uint8) # 25 channel
+        action_info = np.zeros([8,self.action_num,4 * 20 + 1],np.uint8)
+        extra_info = np.zeros([6],np.uint8)
         legal_actions_info = np.zeros([self.action_num],np.uint8) # 25 channel
         
         hold_card = obs[0]["raw_obs"]["hand"]
@@ -86,17 +88,17 @@ class NlHoldemEnvWrapper():
             
         
         for ind_round,one_history in enumerate(self.history):
-            for ind_h,(player_id,action_id,legal_actions) in enumerate(one_history[:6]):
-                action_info[player_id,action_id,ind_round * 6 + ind_h] = 1
-                action_info[2,action_id,ind_round * 6 + ind_h] = 1
+            for ind_h,(player_id,action_id,legal_actions) in enumerate(one_history[:20]):
+                action_info[player_id,action_id,ind_round * 20 + ind_h] = 1
+                action_info[6,action_id,ind_round * 20 + ind_h] = 1
                 
                 for la_ind in legal_actions:
-                    action_info[3,la_ind,ind_round * 6 + ind_h] = 1
+                    action_info[7,la_ind,ind_round * 20 + ind_h] = 1
                     
         action_info[:,:,-1] = self.my_agent()
         
-        extra_info[0] = obs[0]["raw_obs"]["stakes"][0]
-        extra_info[1] = obs[0]["raw_obs"]["stakes"][1]
+        for i in range(6):
+            extra_info[i] = obs[0]["raw_obs"]["stakes"][i]
         
         return {
             "card_info": card_info,
@@ -127,7 +129,7 @@ class NlHoldemEnvWrapper():
         obs = self._get_observation(obs)
         
         done = False
-        reward = [0,0]
+        reward = [0 for _ in range(6)]
         info = {}
         if self.env.game.is_over():
             done = True
@@ -170,7 +172,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
         
     def _opponent_step(self,obs):
         if self.opponent == "random":
-            rwd = [0,0]
+            rwd = [0 for _ in range(6)]
             done = False
             info = {}
             while self.my_agent() != self.our_pid:
@@ -181,7 +183,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
                     break
             return obs,rwd,done,info
         elif self.opponent == "nn":
-            rwd = [0,0]
+            rwd = [0 for _ in range(6)]
             done = False
             info = {}
             while self.my_agent() != self.our_pid:
@@ -197,7 +199,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
     def reset(self):
         self.last_reward = 0
         self.is_done = False
-        self.our_pid = random.randint(0,1)
+        self.our_pid = random.randint(0,5)
         
         obs = super(NlHoldemEnvWithOpponent, self).reset()
         

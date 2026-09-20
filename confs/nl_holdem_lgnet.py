@@ -19,7 +19,8 @@
     },
     "env_config":{
         'custom_options': {
-            "rwd_ratio": 1.0
+            "rwd_ratio": 1.0,
+            "num_players": 6
         },
     }
 }
