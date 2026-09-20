@@ -34,22 +34,43 @@ class NlHoldemNet(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
         
+        # PyTorch uses NCHW. The input is NHWC from the env (because of old TF config).
+        # We need to permute inside forward.
+        # card_info: (batch, 4, 13, 6) -> permute -> (batch, 6, 4, 13)
         self.card_conv = nn.Sequential(
             ResBlock(6, 16, 3, 1),
             ResBlock(16, 32, 3, 2),
             ResBlock(32, 64, 3, 2),
         )
         
+        # Output of card_conv:
+        # Input: 6x4x13
+        # Stride 1: 16x4x13
+        # Stride 2: 32x2x7
+        # Stride 2: 64x1x4
+        # Flattened size: 64 * 1 * 4 = 256
+        self.card_flat_size = 64 * 1 * 4
+        
+        # action_info: (batch, 8, 5, 81) -> permute -> (batch, 81, 8, 5)
         self.action_conv = nn.Sequential(
             ResBlock(81, 16, 3, 1),
             ResBlock(16, 32, 3, 2),
             ResBlock(32, 64, 3, 2),
         )
         
+        # Output of action_conv:
+        # Input: 81x8x5
+        # Stride 1: 16x8x5
+        # Stride 2: 32x4x3
+        # Stride 2: 64x2x2
+        # Flattened size: 64 * 2 * 2 = 256
+        self.action_flat_size = 64 * 2 * 2
+        
         self.extra_fc = nn.Sequential(
             SlimFC(6, 16, initializer=normc_initializer(0.01), activation_fn="relu")
         )
         
+        # feature_fuse = 256 + 256 + 16 = 528
         self.fc = nn.Sequential(
             SlimFC(528, 256, initializer=normc_initializer(0.01), activation_fn="relu"),
             SlimFC(256, 128, initializer=normc_initializer(0.01), activation_fn="relu"),
@@ -60,11 +81,12 @@ class NlHoldemNet(TorchModelV2, nn.Module):
         self.value_out = SlimFC(64, 1, initializer=normc_initializer(0.01), activation_fn=None)
 
     def forward(self, input_dict, state, seq_lens):
+        # Permute from NHWC to NCHW
         card_info = input_dict["obs"]["card_info"].float()
-        card_info = card_info.permute(0, 3, 1, 2)
+        card_info = card_info.permute(0, 3, 1, 2) # (B, 6, 4, 13)
         
         action_info = input_dict["obs"]["action_info"].float()
-        action_info = action_info.permute(0, 3, 1, 2)
+        action_info = action_info.permute(0, 3, 1, 2) # (B, 81, 8, 5)
         
         extra_info = input_dict["obs"]["extra_info"].float()
         
@@ -83,6 +105,7 @@ class NlHoldemNet(TorchModelV2, nn.Module):
         self._value = self.value_out(fc_out)
         
         action_mask = input_dict["obs"]["legal_moves"].float()
+        # mask illegal moves with large negative number
         inf_mask = torch.clamp(torch.log(action_mask), min=torch.finfo(torch.float32).min)
         
         return logits + inf_mask, state

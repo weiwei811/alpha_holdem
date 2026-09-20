@@ -43,11 +43,11 @@ By default you are playing against an NN opponent which has been trained for abo
 
 ![play_against_ai](imgs/play_against_ai.jpg)
 
-## Trainning
+## Training
 
 ### Training 101
 
-To start the training, you have to first change the config in ```confs/nl_holdem.py```
+To start the training, you have to first change the config in `confs/nl_holdem.py`
 
 By default it would require 1 GPU and 89 cpu to run this program.
 
@@ -57,26 +57,40 @@ Modify the line in the config file:
     'num_workers': 89,
 ```
 
-change it to the cpu core that your machine have. However you still need at least one gpu to run this the training.
- 
-And then use command:
+change it to the cpu core that your machine have. However you still need at least one gpu to run the training (or change `num_gpus` to 0 if you only want to train on CPU).
+
+You can then run the training command:
 ```shell script
 python3 train_league.py --conf confs/nl_holdem.py --sp 0.0 --upwin 1.0 --gap=500 --league_tracker_n 1000
 ```
+
+Here is a detailed breakdown of the training parameters you can tweak:
+- `--conf`: Path to the training config file (e.g., `confs/nl_holdem.py`).
+- `--gap`: Number of iterations between checking if a new historical agent should be saved (default: 1000).
+- `--sp`: Probability of playing against the agent's own current policy, i.e., self-play (default: 0.0).
+- `--exg_oppo_prob`: Probability of exchanging/sampling a new opponent after an episode (default: 0.01).
+- `--upwin`: Win rate threshold required against historical agents to save a new checkpoint (default: 1.0).
+- `--kbest`: Number of best historical agents to consider in the league evaluations (default: 5).
+- `--league_tracker_n`: Number of games to track in the league statistics (default: 10000).
+- `--last_num`: The number of latest matches to consider when evaluating win rates (default: 100000).
+- `--rwd_update_ratio`: Ratio for updating results (rewards) to the league tracker (default: 1.0).
+- `--output_dir`: Directory where historical agents will be saved (default: `league/history_agents`).
+- `--mode`: Ray cluster mode to use, usually `'local'` (default: `'local'`).
+- `--experiment_name`: Name of the experiment run (default: `'run_trial_1'`).
 
 Winrate against history agents will be displayed in the stdout log.
 
 ![training](imgs/trainig.jpg)
 
-### Restore training
+### Restore / Continue Training
 
-If the training process is somehow killed or you want to start from the weights you downloaded, First put the downloaded ```league``` folder in this project's root. Then use command :
+If the training process is somehow killed, or you want to start from the weights you downloaded, first put the downloaded `league` folder in this project's root. Then use the `--restore` flag to continue training from where it left off:
 
 ```shell script
 python3 train_league.py --conf confs/nl_holdem.py --sp 0.0 --upwin 1.0 --gap=500 --league_tracker_n 1000 --restore league/history_agents
 ```
 
-It would auto load all training weights and continue training.
+It will automatically load all training weights from the specified directory and resume the training loop.
 
 # Released data
 

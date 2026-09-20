@@ -1,9 +1,9 @@
 {
     'env': 'NlHoldemEnvWithOpponent',
-    'sample_batch_size': 50,
-    'train_batch_size': 1000,
-    'num_workers': 1,
-    'num_envs_per_worker': 1,
+    'rollout_fragment_length': 50,
+    'train_batch_size': 4000,
+    'num_workers': 8,
+    'num_envs_per_env_runner': 1,
     #'broadcast_interval': 5,
     #'max_sample_requests_in_flight_per_worker': 1,
     #'num_data_loader_buffers': 4,
@@ -14,7 +14,7 @@
     'model':{
         'custom_model': 'NlHoldemNet',
         'max_seq_len': 20,
-        'custom_options': {
+        'custom_model_config': {
         },
     },
     "env_config":{

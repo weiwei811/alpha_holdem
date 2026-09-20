@@ -27,13 +27,13 @@ def kbsp(win_rates, k=5):
     else:
         baseline_val = sorted_wr[k-1]
         
-    probs = np.asarray(np.asarray(win_rates) <= baseline_val,np.float)
+    probs = np.asarray(np.asarray(win_rates) <= baseline_val, float)
     norm = probs.sum()
     if norm == 0:
         probs = np.ones_like(win_rates)
         norm = probs.sum()
     else:
-        probs = np.asarray(np.asarray(win_rates) <= baseline_val,np.float)
+        probs = np.asarray(np.asarray(win_rates) <= baseline_val, float)
         norm_rest = float(probs.sum()) * 0.15
         
         z_cnt = 0

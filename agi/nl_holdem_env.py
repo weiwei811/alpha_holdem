@@ -1,13 +1,13 @@
-import gym
+import gymnasium as gym
 import numpy as np
-from gym import spaces
-from ray.rllib.agents.impala.vtrace_policy import VTraceTFPolicy
+from gymnasium import spaces
+from ray.rllib.algorithms.impala.impala_torch_policy import ImpalaTorchPolicy
 from ray.rllib.models import ModelCatalog
-from ray.rllib.utils import try_import_tf
+from ray.rllib.utils.framework import try_import_torch
 import copy
 from io import StringIO 
 import sys
-tf = try_import_tf()
+torch, _ = try_import_torch()
 import rlcard
 from rlcard.utils import set_seed
 import random
@@ -15,8 +15,9 @@ import random
 color2ind = dict(zip("CDHS",[0,1,2,3]))
 rank2ind = dict(zip("23456789TJQKA",[0,1,2,3,4,5,6,7,8,9,10,11,12]))
 
-class NlHoldemEnvWrapper():
+class NlHoldemEnvWrapper(gym.Env):
     def __init__(self,policy_config,weights=None):
+        super().__init__()
         self.policy_config = policy_config
         seed = random.randint(0,1000000)
         self.env = rlcard.make(
@@ -46,10 +47,6 @@ class NlHoldemEnvWrapper():
         
         self.observation_space = spaces.Dict(space)
         self.action_space = spaces.Discrete(self.action_num)
-        
-    @property
-    def unwrapped(self):
-        return None
 
     def _get_observation(self,obs):
         card_info = np.zeros([4,13,6],np.uint8)
@@ -122,7 +119,8 @@ class NlHoldemEnvWrapper():
     def convert(self,reward):
         return float(reward)
         
-    def step(self, action):
+    def _inner_step(self, action):
+        """Internal step returning old-style 4-tuple for use by opponent logic."""
         self._log_action(action)
         obs = self.env.step(action)
         self.last_obs = obs
@@ -137,11 +135,23 @@ class NlHoldemEnvWrapper():
             
         return obs,reward,done,info
 
-    def reset(self):
+    def step(self, action):
+        obs, reward, done, info = self._inner_step(action)
+        return obs, reward, done, False, info
+
+    def _inner_reset(self):
+        """Internal reset returning old-style single obs for use by opponent logic."""
         self.history = [[],[],[],[]]
         obs = self.env.reset()
         self.last_obs = obs
         return self._get_observation(obs)
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+        obs = self._inner_reset()
+        return obs, {}
     
     def legal_moves(self):
         pass
@@ -156,20 +166,24 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
         if self.opponent == "nn":
             self.oppo_name = None
             self.oppo_preprocessor = ModelCatalog.get_preprocessor_for_space(self.observation_space, policy_config.get("model"))
-            self.graph = tf.Graph()
-            with self.graph.as_default():
-                with tf.variable_scope('oppo_policy'):
-                    self.oppo_policy = VTraceTFPolicy(
-                        obs_space=self.oppo_preprocessor.observation_space,
-                        action_space=self.action_space,
-                        config=policy_config,
-                    )
+            
+            from ray.rllib.algorithms.impala import ImpalaConfig
+            dummy_config = ImpalaConfig().framework("torch")
+            dummy_config.model = policy_config.get("model", {})
+            dummy_config.env_config = policy_config.get("env_config", {})
+            dummy_config = dummy_config.api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
+            dummy_config = dummy_config.to_dict() # old API compatibility for Policy constructor
+            self.oppo_policy = ImpalaTorchPolicy(
+                observation_space=self.oppo_preprocessor.observation_space,
+                action_space=self.action_space,
+                config=dummy_config,
+            )
             if weights is not None:
                 import pickle
                 with open(weights,'rb') as fhdl:
                     weights = pickle.load(fhdl)
                 self.oppo_policy.set_weights(weights)
-        
+
     def _opponent_step(self,obs):
         if self.opponent == "random":
             rwd = [0 for _ in range(6)]
@@ -178,7 +192,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
             while self.my_agent() != self.our_pid:
                 legal_moves = obs["legal_moves"]
                 action_ind = np.random.choice(np.where(legal_moves)[0])
-                obs,rwd,done,info = super(NlHoldemEnvWithOpponent, self).step(action_ind)
+                obs,rwd,done,info = super(NlHoldemEnvWithOpponent, self)._inner_step(action_ind)
                 if done:
                     break
             return obs,rwd,done,info
@@ -189,39 +203,42 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
             while self.my_agent() != self.our_pid:
                 observation = self.oppo_preprocessor.transform(obs)
                 action_ind = self.oppo_policy.compute_actions([observation])[0][0]
-                obs,rwd,done,info = super(NlHoldemEnvWithOpponent, self).step(action_ind)
+                obs,rwd,done,info = super(NlHoldemEnvWithOpponent, self)._inner_step(action_ind)
                 if done:
                     break
             return obs,rwd,done,info
         else:
             raise        
         
-    def reset(self):
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
         self.last_reward = 0
         self.is_done = False
         self.our_pid = random.randint(0,5)
         
-        obs = super(NlHoldemEnvWithOpponent, self).reset()
+        obs = super(NlHoldemEnvWithOpponent, self)._inner_reset()
         
         while True:
             obs,rwd,done,info = self._opponent_step(obs)
             if not done:
-                return obs
+                return obs, {}
             else:
-                obs = super(NlHoldemEnvWithOpponent, self).reset()
+                obs = super(NlHoldemEnvWithOpponent, self)._inner_reset()
             
     def step(self,action):
-        obs,reward,done,info = super(NlHoldemEnvWithOpponent, self).step(action)
+        obs,reward,done,info = super(NlHoldemEnvWithOpponent, self)._inner_step(action)
         reward = [i * self.rwd_ratio for i in reward]
         if done:
             self.is_done = True
             self.last_reward = reward[self.our_pid]
-            return obs,reward[self.our_pid],done,info
+            return obs,reward[self.our_pid],done,False,info
         else:
             obs,reward,done,info = self._opponent_step(obs)
             reward = [i * self.rwd_ratio for i in reward]
             if done:
                 self.is_done = True
                 self.last_reward = reward[self.our_pid]
-            return obs,reward[self.our_pid],done,info
+            return obs,reward[self.our_pid],done,False,info
         
