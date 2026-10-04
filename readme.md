@@ -4,7 +4,7 @@ This checkout uses 64-bit Python 3.11, PyTorch 2.8.0 (2.2.2 for Intel macOS), an
 
 ## Setup: Windows CUDA, Windows CPU, and macOS
 
-Run setup commands from the repository root. Use **64-bit Python 3.11**. The scripts create a local `.venv`; activation is optional because the examples call its Python directly.
+Use **64-bit Python 3.11**. The setup and training launchers locate the repository from their own path and can be called from another directory. Direct Python commands below assume the repository root. The scripts create a local `.venv`; activation is optional because the examples call its Python directly.
 
 ### Windows with NVIDIA CUDA
 
@@ -30,7 +30,7 @@ CUDA inference, backward execution, and a training iteration were verified on an
 .\setup_env.ps1 -Device cpu
 ```
 
-Use `--device cpu` for training even if a CUDA wheel is installed. `requirements-lock.txt` is the earlier Windows CPU dependency snapshot; it does not select a CUDA wheel.
+Use `--device cpu` for training even if a CUDA wheel is installed.
 
 ### macOS: Apple Silicon or Intel
 
@@ -41,7 +41,7 @@ sh setup_env.sh
 .venv/bin/python -c 'import torch; print(torch.__version__); print("MPS available:", torch.backends.mps.is_available())'
 ```
 
-The script detects `arm64` or `x86_64` and selects the matching Mac dependency lock. Ray's wheels target macOS 12 or newer; Metal also requires a compatible macOS/PyTorch/hardware combination. Run an arm64 Python on Apple Silicon to use the current native PyTorch build.
+The script installs the shared `requirements.txt`; platform markers select the matching PyTorch version for the Python architecture. Ray's wheels target macOS 12 or newer; Metal also requires a compatible macOS/PyTorch/hardware combination. Run an arm64 Python on Apple Silicon to use the current native PyTorch build.
 
 Apple Silicon uses the standard **PyTorch 2.8.0 macOS wheel**, which includes MPS support. Intel Mac uses **PyTorch 2.2.2**, since PyTorch 2.8 does not publish an Intel macOS wheel. Ray 2.49.2 publishes wheels for both architectures. Both Mac dependency sets were resolved with binary wheels only; **Mac runtime execution has not been verified on hardware**. Do not install the Windows CUDA lockfile on a Mac.
 
@@ -60,11 +60,8 @@ Windows and Apple Silicon share the PyTorch 2.8 API version. Windows CUDA additi
 |---|---|
 | `requirements.txt` | Portable direct dependencies; platform markers choose PyTorch 2.8 or Intel Mac 2.2.2. Use when resolving dependencies afresh. |
 | `requirements-windows-cuda.txt` | Exact verified Windows CUDA packages; includes the CUDA wheel index and `torch==2.8.0+cu126`. |
-| `requirements-lock.txt` | Earlier Windows CPU package snapshot. |
-| `requirements-mac-arm64.txt` | Resolved Apple Silicon package versions; selected by Mac setup. |
-| `requirements-mac-intel.txt` | Resolved Intel Mac package versions; selected by Mac setup. |
 
-The platform locks pin transitive dependencies for repeatable setup. When changing direct dependencies, regenerate the appropriate locks; do not copy the Windows CUDA lock onto another platform. The bundled RLCard engine is used from this repository and must not be replaced with a separate pip installation.
+The optional Windows CUDA lock pins transitive dependencies for repeatable setup on the tested machine. Regenerate it when changing direct dependencies; use `requirements.txt` on other platforms. The bundled RLCard engine is used from this repository and must not be replaced with a separate pip installation.
 
 Run the suite with the matching environment:
 
@@ -78,9 +75,21 @@ Run the suite with the matching environment:
 .venv/bin/python -m pytest tests -q
 ```
 
-Windows CPU/CUDA verification passed **32 tests**, with **2 MPS hardware tests skipped**.
+Windows CPU/CUDA verification passed **36 tests**, with **2 MPS hardware tests skipped**.
 
 ## Train six players
+
+There are two training launchers: `run_training.ps1` for Windows and `run_training.sh` for Mac/Linux. Both use the repository's `.venv`, forward all CLI arguments, and share the Python entry point's defaults:
+
+```powershell
+.\run_training.ps1 --device cuda --workers 2 --gap 500
+```
+
+```sh
+sh run_training.sh --device cpu --workers 2 --gap 500
+# Apple Silicon GPU (experimental): use --device mps
+```
+
 
 ```powershell
 .\.venv\Scripts\python.exe train_league.py --conf confs/nl_holdem.py --workers 2 --gap 500

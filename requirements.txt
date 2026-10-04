@@ -2,7 +2,7 @@
 # PyTorch 2.8 supports Windows and Apple Silicon. Intel Mac needs 2.2.2.
 # CUDA build selection is handled by setup_env.ps1 / requirements-windows-cuda.txt.
 # Mac MPS is included in the normal macOS PyTorch wheel.
-# See readme.md for platform-specific resolved lockfiles.
+# Use requirements-windows-cuda.txt only for the exact tested Windows CUDA install.
 torch==2.8.0; platform_system != "Darwin" or platform_machine == "arm64"
 torch==2.2.2; platform_system == "Darwin" and platform_machine == "x86_64"
 ray[rllib]==2.49.2
