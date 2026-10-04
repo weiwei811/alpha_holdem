@@ -1,7 +1,13 @@
-torch
-ray[rllib]>=2.9.0
+# Portable direct dependencies for 64-bit Python 3.11; use vendored rlcard.
+# PyTorch 2.8 supports Windows and Apple Silicon. Intel Mac needs 2.2.2.
+# CUDA build selection is handled by setup_env.ps1 / requirements-windows-cuda.txt.
+# Mac MPS is included in the normal macOS PyTorch wheel.
+# See readme.md for platform-specific resolved lockfiles.
+torch==2.8.0; platform_system != "Darwin" or platform_machine == "arm64"
+torch==2.2.2; platform_system == "Darwin" and platform_machine == "x86_64"
+ray[rllib]==2.49.2
+numpy==1.26.4
 h5py
-numpy
 pandas
 pandocfilters
 requests
@@ -9,11 +15,8 @@ scipy
 SuperSuit
 tabulate
 tqdm
-rlcard
 Flask
 Flask-SocketIO
-python-engineio
-python-socketio
-itsdangerous
-Jinja2
-werkzeug
+matplotlib
+pytest
+termcolor

@@ -110,15 +110,10 @@ class League():
         self.weights_dic[self.current_pid] = new_weight
         n = self.n
         if self.winrates is None:
-            self.winrates = [WinrateTracker(n,n) for i in self.pids]
-        else:
-            old_winrates = self.winrates
-            self.winrates = [WinrateTracker(n,n) for i in self.pids]
-            for i in range(min(len(self.winrates),len(old_winrates))):
-                self.winrates[i].v = old_winrates[i].v
-        self.selfplay_winrate = WinrateTracker(n,n)
-        
-        
+            self.winrates = []
+            self.selfplay_winrate = WinrateTracker(n,n)
+        self.winrates.append(WinrateTracker(n,n))
+
         output_dir = self.output_dir
         if output_dir:
             if not os.path.exists(output_dir):
@@ -128,6 +123,7 @@ class League():
             fname = os.path.join(output_dir, 'weights', 'c_{}.pkl'.format(self.current_pid))
             with open(fname, 'wb') as whdl:
                 pickle.dump(new_weight, whdl)
+            self.get_statics_table()
 
 
     def set_winrates(self,winrates):

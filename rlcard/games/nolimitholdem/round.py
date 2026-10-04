@@ -19,184 +19,95 @@ class Action(Enum):
 
 
 class NolimitholdemRound:
-    """Round can call functions from other classes to keep the game running"""
+    """Track seats still owing a decision and full-raise reopening rights."""
 
     def __init__(self, num_players, init_raise_amount, dealer, np_random):
-        """
-        Initialize the round class
-
-        Args:
-            num_players (int): The number of players
-            init_raise_amount (int): The min raise amount when every round starts
-        """
-        self.np_random = np_random
-        self.game_pointer = None
         self.num_players = num_players
         self.init_raise_amount = init_raise_amount
-
         self.dealer = dealer
-
-        # Count the number without raise
-        # If every player agree to not raise, the round is over
-        self.not_raise_num = 0
-
-        # Count players that are not playing anymore (folded or all-in)
-        self.not_playing_num = 0
-
-        # Raised amount for each player
-        self.raised = [0 for _ in range(self.num_players)]
-        self.last_raise_amount = self.init_raise_amount
+        self.np_random = np_random
+        self.start_new_round(0)
 
     def start_new_round(self, game_pointer, raised=None):
-        """
-        Start a new bidding round
-
-        Args:
-            game_pointer (int): The game_pointer that indicates the next player
-            raised (list): Initialize the chips for each player
-
-        Note: For the first round of the game, we need to setup the big/small blind
-        """
         self.game_pointer = game_pointer
-        self.not_raise_num = 0
-        if raised:
-            self.raised = raised
-        else:
-            self.raised = [0 for _ in range(self.num_players)]
+        self.raised = list(raised) if raised is not None else [0] * self.num_players
         self.last_raise_amount = self.init_raise_amount
+        self.pending = None
+        self.acted_at = {}
+
+    def _active(self, players):
+        return {i for i, p in enumerate(players) if p.status == PlayerStatus.ALIVE}
+
+    def _can_raise(self, pid):
+        return (pid not in self.acted_at or
+                max(self.raised) - self.acted_at[pid] >= self.last_raise_amount)
+
+    def _quantity(self, action, players):
+        player = players[self.game_pointer]
+        call = max(self.raised) - self.raised[self.game_pointer]
+        pot = sum(p.in_chips for p in players)
+        if action == Action.CHECK_CALL:
+            return min(call, player.remained_chips)
+        if action == Action.ALL_IN:
+            return player.remained_chips
+        fraction = 0.5 if action == Action.RAISE_HALF_POT else 1.0
+        return call + int((pot + call) * fraction)
 
     def proceed_round(self, players, action):
-        """
-        Call functions from other classes to keep one round running
-
-        Args:
-            players (list): The list of players that play the game
-            action (str/int): An legal action taken by the player
-
-        Returns:
-            (int): The game_pointer that indicates the next player
-        """
-        player = players[self.game_pointer]
-
-        if action == Action.CHECK_CALL:
-            diff = max(self.raised) - self.raised[self.game_pointer]
-            self.raised[self.game_pointer] = max(self.raised)
-            player.bet(chips=diff)
-            self.not_raise_num += 1
-
-        elif action == Action.ALL_IN:
-            all_in_quantity = player.remained_chips
-            call_amount = max(self.raised) - self.raised[self.game_pointer]
-            raise_amount = all_in_quantity - call_amount
-            if raise_amount > 0:
-                self.last_raise_amount = max(self.last_raise_amount, raise_amount)
-            self.raised[self.game_pointer] = all_in_quantity + self.raised[self.game_pointer]
-            player.bet(chips=all_in_quantity)
-
-            self.not_raise_num = 1
-
-        elif action == Action.RAISE_POT:
-            quantity = self.dealer.pot
-            call_amount = max(self.raised) - self.raised[self.game_pointer]
-            raise_amount = quantity - call_amount
-            if raise_amount > 0:
-                self.last_raise_amount = max(self.last_raise_amount, raise_amount)
-            self.raised[self.game_pointer] += quantity
-            player.bet(chips=quantity)
-            self.not_raise_num = 1
-
-        elif action == Action.RAISE_HALF_POT:
-            quantity = int(self.dealer.pot / 2)
-            call_amount = max(self.raised) - self.raised[self.game_pointer]
-            raise_amount = quantity - call_amount
-            if raise_amount > 0:
-                self.last_raise_amount = max(self.last_raise_amount, raise_amount)
-            self.raised[self.game_pointer] += quantity
-            player.bet(chips=quantity)
-            self.not_raise_num = 1
-
-        elif action == Action.FOLD:
+        pid = self.game_pointer
+        player = players[pid]
+        if action not in self.get_nolimit_legal_actions(players):
+            raise ValueError('Action not allowed')
+        if self.pending is None:
+            self.pending = self._active(players)
+        old_max = max(self.raised)
+        if action == Action.FOLD:
             player.status = PlayerStatus.FOLDED
-
-        if player.remained_chips < 0:
-            raise Exception("Player in negative stake")
-
-        if player.remained_chips == 0 and player.status != PlayerStatus.FOLDED:
-            player.status = PlayerStatus.ALLIN
-
-        self.game_pointer = (self.game_pointer + 1) % self.num_players
-
-        if player.status == PlayerStatus.ALLIN:
-            self.not_playing_num += 1
-            self.not_raise_num -= 1  # Because already counted in not_playing_num
-        if player.status == PlayerStatus.FOLDED:
-            self.not_playing_num += 1
-
-        # Skip the folded players
-        while players[self.game_pointer].status == PlayerStatus.FOLDED:
-            self.game_pointer = (self.game_pointer + 1) % self.num_players
-
+        else:
+            quantity = self._quantity(action, players)
+            player.bet(quantity)
+            self.raised[pid] += quantity
+            if player.remained_chips == 0:
+                player.status = PlayerStatus.ALLIN
+            increment = max(self.raised) - old_max
+            if increment >= self.last_raise_amount:
+                self.last_raise_amount = increment
+                self.pending = self._active(players)
+            elif increment > 0:
+                # Short all-ins require calls, but do not reopen earlier callers.
+                self.pending |= {i for i in self._active(players)
+                                 if self.raised[i] < max(self.raised)}
+            self.acted_at[pid] = max(self.raised)
+        self.pending.discard(pid)
+        active = self._active(players)
+        self.pending &= active
+        if len(active) == 1 and self.raised[next(iter(active))] >= max(self.raised):
+            self.pending.clear()
+        if len([p for p in players if p.status != PlayerStatus.FOLDED]) == 1:
+            self.pending.clear()
+        for offset in range(1, self.num_players + 1):
+            candidate = (pid + offset) % self.num_players
+            if candidate in self.pending:
+                self.game_pointer = candidate
+                break
         return self.game_pointer
 
     def get_nolimit_legal_actions(self, players):
-        """
-        Obtain the legal actions for the current player
-
-        Args:
-            players (list): The players in the game
-
-        Returns:
-           (list):  A list of legal actions
-        """
-
-        full_actions = list(Action)
-
-        # The player can always check or call
-        player = players[self.game_pointer]
-
-        diff = max(self.raised) - self.raised[self.game_pointer]
-        # If the current player has no more chips after call, we cannot raise
-        if diff > 0 and diff >= player.remained_chips:
-            full_actions.remove(Action.RAISE_HALF_POT)
-            full_actions.remove(Action.RAISE_POT)
-            full_actions.remove(Action.ALL_IN)
-        # Even if we can raise, we have to check remained chips
-        else:
-            if self.dealer.pot > player.remained_chips:
-                full_actions.remove(Action.RAISE_POT)
-
-            if int(self.dealer.pot / 2) > player.remained_chips:
-                full_actions.remove(Action.RAISE_HALF_POT)
-
-            # Can't raise if the total raise amount is leq than the max raise amount of this round
-            # If raise by pot, there is no such concern
-            if Action.RAISE_HALF_POT in full_actions and \
-                int(self.dealer.pot / 2) + self.raised[self.game_pointer] <= max(self.raised):
-                full_actions.remove(Action.RAISE_HALF_POT)
-            # Check minimum raise (must raise by at least last_raise_amount)
-            min_raise = self.last_raise_amount
-            
-            # For RAISE_HALF_POT, the raise amount is int(self.dealer.pot / 2) - diff
-            if Action.RAISE_HALF_POT in full_actions:
-                raise_amount = int(self.dealer.pot / 2) - diff
-                if raise_amount < min_raise:
-                    full_actions.remove(Action.RAISE_HALF_POT)
-                    
-            if Action.RAISE_POT in full_actions:
-                raise_amount = self.dealer.pot - diff
-                if raise_amount < min_raise:
-                    full_actions.remove(Action.RAISE_POT)
-
-
-        return full_actions
+        pid = self.game_pointer
+        player = players[pid]
+        if player.status != PlayerStatus.ALIVE:
+            return []
+        actions = [Action.FOLD, Action.CHECK_CALL]
+        call = max(self.raised) - self.raised[pid]
+        other_active = self._active(players) - {pid}
+        if not other_active or not self._can_raise(pid) or player.remained_chips <= call:
+            return actions
+        for action in (Action.RAISE_HALF_POT, Action.RAISE_POT):
+            quantity = self._quantity(action, players)
+            if quantity <= player.remained_chips and quantity - call >= self.last_raise_amount:
+                actions.append(action)
+        actions.append(Action.ALL_IN)
+        return actions
 
     def is_over(self):
-        """
-        Check whether the round is over
-
-        Returns:
-            (boolean): True if the current round is over
-        """
-        if self.not_raise_num + self.not_playing_num >= self.num_players:
-            return True
-        return False
+        return self.pending is not None and not self.pending

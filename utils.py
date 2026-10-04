@@ -33,65 +33,39 @@ def ma_sample(spaces):
         retval[k] = v.sample()
     return retval
 
-def get_winrate_and_weight(logdir,league):
-    wr_path = os.path.join(logdir,'winrates.csv')
-    weight_path = os.path.join(logdir,'weights')
-    
-    wr = pd.read_csv(wr_path)
-    winrates = wr.values[0][1:]
-    
-    weights = os.listdir(weight_path)
-    weights = [i for i in weights if i.split('.')[-1] == 'pkl']
-    
-    minlen = min(len(weights),len(winrates))
-    
-    winrates = winrates[-minlen:]
-    weights = weights[-minlen:]
-    
-    weights = sorted(weights,key=lambda x:int(x.split('.')[0].split("_")[-1]))
-    
-    assert(len(weights) == len(winrates))
-    
-    weights = [pickle.load(open(os.path.join(weight_path,i), "rb")) for i in weights]
-    
-    for weight in weights:
-        league.add_weight.remote(weight)
-    league.set_winrates.remote(winrates)
-    
-def register_restore_weight_trainer(weight):
-    pweight = {}
-    for k,v in weight.items():
-        k = k.replace("oppo_policy","default_policy")
-        pweight[k] = v
+def get_winrate_and_weight(logdir, league):
+    """Restore checkpoint order and rewards from the headerless league table."""
+    import ray
+    from pathlib import Path
+    table = pd.read_csv(Path(logdir) / 'winrates.csv', header=None)
+    rewards = dict(zip(table.iloc[0, 1:], table.iloc[1, 1:].astype(float)))
+    paths = sorted((Path(logdir) / 'weights').glob('c_*.pkl'),
+                   key=lambda path: int(path.stem.split('_')[-1]))
+    if not paths:
+        raise ValueError('No league checkpoints found')
+    winrates = []
+    for path in paths:
+        if path.stem not in rewards:
+            raise ValueError('Missing league statistics for ' + path.stem)
+        with path.open('rb') as stream:
+            weight = pickle.load(stream)
+        ray.get(league.add_weight.remote(weight))
+        winrates.append(rewards[path.stem])
+    ray.get(league.set_winrates.remote(winrates))
+    # The learner can be newer than the last historical opponent snapshot.
+    final_path = Path(logdir) / 'output_weight.pkl'
+    if final_path.exists():
+        with final_path.open('rb') as stream:
+            return pickle.load(stream)
+    return weight
 
-    from ray.rllib.agents.impala.impala import build_trainer,DEFAULT_CONFIG,VTraceTFPolicy
-    from ray.rllib.agents.impala.impala import validate_config,choose_policy,make_aggregators_and_optimizer
-    from ray.rllib.agents.impala.impala import OverrideDefaultResourceRequest
-    
-    def my_defer_make_workers(trainer, env_creator, policy, config):
-        def load_history(worker):
-            for p, policy in worker.policy_map.items():
-                print("loading weights" + "|" * 100)
-                policy.set_weights(pweight)
-        
-        # Defer worker creation to after the optimizer has been created.
-        workers = trainer._make_workers(env_creator, policy, config, 0)
-        print("inside my defer make workers")
-        
-        workers.local_worker().apply(load_history)
-        for one_worker in workers.remote_workers():
-            one_worker.apply(load_history)
-        return workers
 
-    MyImpalaTrainer = build_trainer(
-        name="IMPALA",
-        default_config=DEFAULT_CONFIG,
-        default_policy=VTraceTFPolicy,
-        validate_config=validate_config,
-        get_policy_class=choose_policy,
-        make_workers=my_defer_make_workers,
-        make_policy_optimizer=make_aggregators_and_optimizer,
-        mixins=[OverrideDefaultResourceRequest])
-    
-    register_trainable("IMPALA", MyImpalaTrainer)
-
+def save_learner_weights(output_dir, weight):
+    """Replace the latest learner snapshot only after its complete write."""
+    from pathlib import Path
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = directory / 'output_weight.pkl.tmp'
+    with temporary.open('wb') as stream:
+        pickle.dump(weight, stream)
+    temporary.replace(directory / 'output_weight.pkl')

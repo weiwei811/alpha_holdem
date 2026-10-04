@@ -1,54 +1,34 @@
+"""Evaluate a newly trained six-player policy against random legal actions."""
+import argparse
+import ast
 import sys
-sys.path.append("../")
-from ray.rllib.models import ModelCatalog
-from agi.nl_holdem_env import NlHoldemEnvWrapper
-from agi.nl_holdem_net import NlHoldemNet
-ModelCatalog.register_custom_model('NlHoldemNet', NlHoldemNet)
+from pathlib import Path
 import numpy as np
-from tqdm import tqdm
-import pandas as pd
-from agi.evaluation_tools import NNAgent,death_match
-
-#%%
-
-conf = eval(open("../confs/nl_holdem.py").read().strip())
-
-#%%
-
-env = NlHoldemEnvWrapper(
-        conf
-)
-
-#%%
-
-i = 1048
-nn_agent = NNAgent(env.observation_space,
-                       env.action_space,
-                       conf,
-                       f"../weights/c_{i}.pkl",
-                       f"oppo_c{i}")
-
-#%%
-
-for i in tqdm(range(10)):
-    obs = env.reset()
-    d = False
-    while not d:
-        action_ind = nn_agent.make_action(obs)
-        obs,r,d,i = env.step(action_ind)
-    #break
-
-#%%
-
-print(
-    env.env.get_state(0)["raw_obs"]["hand"],\
-    env.env.get_state(1)["raw_obs"]["hand"],\
-    env.env.get_state(1)["raw_obs"]["public_cards"],\
-    env.env.get_state(1)["action_record"]
-    )
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agi.nl_holdem_env import NlHoldemEnvWrapper
+from agi.evaluation_tools import NNAgent, death_match
 
 
-#%%
+class RandomAgent:
+    def make_action(self, obs, deterministic=False):
+        return int(np.random.choice(np.flatnonzero(obs['legal_moves'])))
 
-print(env.env.get_payoffs())
 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--conf', default=str(Path(__file__).resolve().parents[1] / 'confs/nl_holdem.py'))
+    parser.add_argument('--weights', required=True)
+    parser.add_argument('--games', type=int, default=1000)
+    parser.add_argument('--device', choices=['auto','cpu','cuda','mps'], default='cpu')
+    parser.add_argument('--deterministic', action='store_true')
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
+    conf = ast.literal_eval(Path(args.conf).read_text())
+    env = NlHoldemEnvWrapper(conf)
+    agent = NNAgent(env.observation_space, env.action_space, conf, args.weights, device=args.device)
+    rewards = death_match(agent, RandomAgent(), env, args.games, args.deterministic)
+    print('Mean hero profit: {:.3f} chips/hand ({:.1f} mbb/hand)'.format(np.mean(rewards), np.mean(rewards)*500))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,94 +1,110 @@
-from ray.rllib.utils import try_import_tf
-from ray.rllib.algorithms.impala.impala_tf_policy import ImpalaTF1Policy as VTraceTFPolicy
-import pandas as pd
-from ray.rllib.models import ModelCatalog
-tf1, tf, tfv = try_import_tf()
-tf = tf1 if tf1 else tf
-tf.compat.v1.disable_eager_execution()
-from tqdm import tqdm
+"""PyTorch inference using the exact model and observations used in training."""
+import pickle
+from collections.abc import Mapping
 import numpy as np
+import torch
+from agi.nl_holdem_net import NlHoldemNet
+from agi.nl_holdem_lg_net import NlHoldemLgNet
 
-class NNAgent():
-    def __init__(self,observation_space,action_space,policy_config,weights,variable_scope="oppo_policy"):
-        # Merge user config with Impala defaults so newer required keys are present
-        from ray.rllib.algorithms.impala import ImpalaConfig
-        full_config = ImpalaConfig().to_dict()
-        full_config.update(policy_config)
-        # Ensure proper exploration and framework settings for TF1 graph mode
-        full_config.setdefault("exploration_config", {"type": "StochasticSampling"})
-        if not full_config.get("exploration_config", {}).get("type"):
-            full_config["exploration_config"] = {"type": "StochasticSampling"}
-        full_config.setdefault("framework", "tf")
-        
-        self.oppo_preprocessor = ModelCatalog.get_preprocessor_for_space(observation_space, full_config.get("model"))
-        self.graph = tf.Graph()
-        self.name = variable_scope
-        with self.graph.as_default():
-            with tf.variable_scope(variable_scope):
-                self.oppo_policy = VTraceTFPolicy(
-                    observation_space=self.oppo_preprocessor.observation_space,
-                    action_space=action_space,
-                    config=full_config,
-                )
+
+def action_probabilities(logits, legal_moves, temperature=1.0):
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError('temperature must be finite and positive')
+    legal = np.asarray(legal_moves, dtype=bool)
+    if not legal.any():
+        raise ValueError('No legal moves in this observation')
+    scores = np.asarray(logits, dtype=np.float64)
+    if scores.shape != legal.shape or not np.isfinite(scores[legal]).all():
+        raise ValueError('Invalid policy logits')
+    shifted = (scores[legal] - scores[legal].max()) / temperature
+    probabilities = np.zeros(scores.shape, dtype=np.float64)
+    probabilities[legal] = np.exp(shifted)
+    probabilities /= probabilities.sum()
+    return probabilities
+
+
+class NNAgent:
+    def __init__(self, observation_space, action_space, policy_config, weights,
+                 variable_scope='oppo_policy', seed=None, device='cpu'):
+        from agi.devices import resolve_device
+        self.device = resolve_device(device)
+        self.policy_config = policy_config
+        self.rng = np.random.default_rng(seed)
+        config = policy_config.get('model', {})
+        model_name = config.get('custom_model', 'NlHoldemNet')
+        models = {'NlHoldemNet': NlHoldemNet, 'NlHoldemLgNet': NlHoldemLgNet}
+        if model_name not in models:
+            raise ValueError('Unknown inference model: ' + model_name)
+        self.model = models[model_name](observation_space, action_space,
+                                       action_space.n, config, variable_scope)
         if weights is not None:
-            import pickle
-            try:
-                with open(weights,'rb') as fhdl:
-                    weights_data = pickle.load(fhdl)
-                new_weights = {}
-                current_weights = self.oppo_policy.get_weights()
-                for k, v in weights_data.items():
-                    target_k = k.replace("oppo_policy", variable_scope)
-                    if target_k in current_weights:
-                        cur_shape = current_weights[target_k].shape
-                        if v.shape == cur_shape:
-                            new_weights[target_k] = v
-                        elif len(v.shape) == len(cur_shape) and all(v.shape[i] <= cur_shape[i] for i in range(len(v.shape))):
-                            # Pad smaller layer weights (e.g. from 2-player checkpoint)
-                            padded = np.zeros(cur_shape, dtype=v.dtype)
-                            slices = tuple(slice(0, s) for s in v.shape)
-                            padded[slices] = v
-                            new_weights[target_k] = padded
-                self.oppo_policy.set_weights(new_weights)
-            except Exception as e:
-                print(f"Notice: Weight loading exception ({e}), proceeding with initialized weights.")
-            
-    def make_action(self,obs):
+            with open(weights, 'rb') as stream:
+                loaded = pickle.load(stream)
+            expected = self.model.state_dict()
+            if (not isinstance(loaded, Mapping) or set(loaded) != set(expected) or
+                    any(tuple(np.shape(loaded[k])) != tuple(expected[k].shape) for k in expected)):
+                raise ValueError('Incompatible checkpoint. Heads-up TensorFlow weights cannot be '
+                                 'padded into a six-player PyTorch policy; train a new six-player model.')
+            self.model.load_state_dict({k: torch.as_tensor(v) for k,v in loaded.items()}, strict=True)
+        self.model.to(self.device).eval()
+
+    def make_action(self, obs, deterministic=False, temperature=1.0):
         if isinstance(obs, tuple):
             obs = obs[0]
-        observation = self.oppo_preprocessor.transform(obs)
-        action_ind = self.oppo_policy.compute_actions(np.array([observation]))[0][0]
-        return action_ind
-    
-def death_match(agent1,agent2,env):
+        tensors = {k: torch.as_tensor(v, device=self.device).unsqueeze(0) for k,v in obs.items()}
+        with torch.no_grad():
+            logits, _ = self.model({'obs': tensors}, [], None)
+        probs = action_probabilities(logits[0].cpu().numpy(), obs['legal_moves'], temperature)
+        return int(probs.argmax() if deterministic else self.rng.choice(len(probs), p=probs))
+
+    def model_deci(self, history, board, deterministic=False, temperature=1.0):
+        """history: four street lists of (seat, action, legal_action_ids).
+
+        board is a full public-state mapping: hand, public_cards, stakes,
+        contributions, statuses ('alive', 'folded', 'allin'), current_player,
+        dealer_id and legal_moves (action IDs). No opponents are merged.
+        """
+        from agi.nl_holdem_env import NlHoldemEnvWrapper
+        from rlcard.games.limitholdem import PlayerStatus
+        from rlcard.games.nolimitholdem import Action
+        if len(history) != 4:
+            raise ValueError('history must contain four street lists')
+        env = NlHoldemEnvWrapper(self.policy_config)
+        env.reset()
+        n = env.num_players
+        if any(len(board[k]) != n for k in ('stakes', 'contributions', 'statuses')):
+            raise ValueError('Public seat state must include every player')
+        actor = int(board['current_player'])
+        dealer = int(board['dealer_id'])
+        if not 0 <= actor < n or not 0 <= dealer < n:
+            raise ValueError('Invalid current_player or dealer_id')
+        statuses = {'alive': PlayerStatus.ALIVE, 'folded': PlayerStatus.FOLDED,
+                    'allin': PlayerStatus.ALLIN}
+        for i,p in enumerate(env.env.game.players):
+            p.in_chips = board['contributions'][i]
+            p.status = statuses[board['statuses'][i]]
+        env.env.game.game_pointer = actor
+        env.env.game.dealer_id = dealer
+        env.history = history
+        raw = dict(board, legal_actions=[Action(i) for i in board['legal_moves']])
+        return self.make_action(env._get_observation(({'raw_obs': raw}, actor)),
+                                deterministic=deterministic, temperature=temperature)
+
+
+def model_deci(history, board, deterministic=False, *, agent, temperature=1.0):
+    return agent.model_deci(history, board, deterministic, temperature)
+
+
+def death_match(agent1, agent2, env, games=1000, deterministic=False):
+    """Evaluate hero against copies of the other policy, rotating all seats."""
     rewards = []
-    for i in tqdm(range(5000)):
-        obs = env.reset()
-        d = False
-        while not d:
-            legal_moves = obs["legal_moves"]
-            #action_ind = np.random.choice(np.where(legal_moves)[0])
-            if env.my_agent() == 0:
-                action_ind = agent1.make_action(obs)
-            elif env.my_agent() == 1:
-                action_ind = agent2.make_action(obs)
-            else:
-                raise
-            obs,r,d,i = env.step(action_ind)
-        rewards.append(r[0])
-    
-    for i in tqdm(range(5000)):
-        obs = env.reset()
-        d = False
-        while not d:
-            legal_moves = obs["legal_moves"]
-            #action_ind = np.random.choice(np.where(legal_moves)[0])
-            if env.my_agent() == 0:
-                action_ind = agent2.make_action(obs)
-            elif env.my_agent() == 1:
-                action_ind = agent1.make_action(obs)
-            else:
-                raise
-            obs,r,d,i = env.step(action_ind)
-        rewards.append(r[1])
+    for game in range(games):
+        hero = game % env.num_players
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            agent = agent1 if env.my_agent() == hero else agent2
+            action = agent.make_action(obs, deterministic=deterministic)
+            obs, payoff, done, _, _ = env.step(action)
+        rewards.append(payoff[hero])
     return rewards

@@ -176,3 +176,8 @@ logs/
 log/
 *.log
 league/
+# Local training verification
+work/
+winrates.csv
+output_weight.pkl
+weights/output_weight_*.pkl

@@ -93,14 +93,10 @@ class NolimitholdemEnv(Env):
         Returns:
             action (str): action for the game
         '''
-        legal_actions = self.game.get_legal_actions()
-        if self.actions(action_id) not in legal_actions:
-            if Action.CHECK in legal_actions:
-                return Action.CHECK
-            else:
-                print("Tried non legal action", action_id, self.actions(action_id), legal_actions)
-                return Action.FOLD
-        return self.actions(action_id)
+        action = self.actions(action_id)
+        if action not in self.game.get_legal_actions():
+            raise ValueError('Illegal no-limit holdem action: {}'.format(action_id))
+        return action
 
     def get_perfect_information(self):
         ''' Get the perfect information of the current state

@@ -30,33 +30,43 @@ class ResBlock(nn.Module):
         return self.relu2(y + shortcut)
 
 class NlHoldemNet(TorchModelV2, nn.Module):
+    conv_width = 16
     def __init__(self, obs_space, action_space, num_outputs, model_config, name):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
         
+        original = getattr(obs_space, 'original_space', obs_space)
+        action_shape = original['action_info'].shape
+        players = original['extra_info'].shape[0]
+        self.has_table_info = 'table_info' in original.spaces
+        self.stack_scale = float(model_config.get('custom_model_config', {}).get('stack_scale', 200.0))
+        if self.stack_scale <= 0:
+            raise ValueError('stack_scale must be positive')
+        width = self.conv_width
+        final = width * 4
         self.card_conv = nn.Sequential(
-            ResBlock(6, 16, 3, 1),
-            ResBlock(16, 32, 3, 2),
-            ResBlock(32, 64, 3, 2),
+            ResBlock(6, width, 3, 1),
+            ResBlock(width, width * 2, 3, 2),
+            ResBlock(width * 2, final, 3, 2),
         )
         
         self.action_conv = nn.Sequential(
-            ResBlock(81, 16, 3, 1),
-            ResBlock(16, 32, 3, 2),
-            ResBlock(32, 64, 3, 2),
+            ResBlock(action_shape[-1], width, 3, 1),
+            ResBlock(width, width * 2, 3, 2),
+            ResBlock(width * 2, final, 3, 2),
         )
         
         self.extra_fc = nn.Sequential(
-            SlimFC(6, 16, initializer=normc_initializer(0.01), activation_fn="relu")
+            SlimFC(players * (6 if self.has_table_info else 1), 16, initializer=normc_initializer(0.01), activation_fn="relu")
         )
         
         self.fc = nn.Sequential(
-            SlimFC(528, 256, initializer=normc_initializer(0.01), activation_fn="relu"),
+            SlimFC(final * (4 + ((action_shape[0] + 3) // 4) * ((action_shape[1] + 3) // 4)) + 16, 256, initializer=normc_initializer(0.01), activation_fn="relu"),
             SlimFC(256, 128, initializer=normc_initializer(0.01), activation_fn="relu"),
             SlimFC(128, 64, initializer=normc_initializer(0.01), activation_fn="relu")
         )
         
-        self.conv_fuse = SlimFC(64, 5, initializer=normc_initializer(0.01), activation_fn=None)
+        self.conv_fuse = SlimFC(64, num_outputs, initializer=normc_initializer(0.01), activation_fn=None)
         self.value_out = SlimFC(64, 1, initializer=normc_initializer(0.01), activation_fn=None)
 
     def forward(self, input_dict, state, seq_lens):
@@ -66,7 +76,11 @@ class NlHoldemNet(TorchModelV2, nn.Module):
         action_info = input_dict["obs"]["action_info"].float()
         action_info = action_info.permute(0, 3, 1, 2)
         
-        extra_info = input_dict["obs"]["extra_info"].float()
+        extra_info = input_dict["obs"]["extra_info"].float() / self.stack_scale
+        if self.has_table_info:
+            table = input_dict['obs']['table_info'].float().clone()
+            table[:, :, 0] /= self.stack_scale
+            extra_info = torch.cat([extra_info, table.flatten(1)], dim=-1)
         
         card_out = self.card_conv(card_info)
         card_out = card_out.reshape(card_out.shape[0], -1)
@@ -83,9 +97,8 @@ class NlHoldemNet(TorchModelV2, nn.Module):
         self._value = self.value_out(fc_out)
         
         action_mask = input_dict["obs"]["legal_moves"].float()
-        inf_mask = torch.clamp(torch.log(action_mask), min=torch.finfo(torch.float32).min)
-        
-        return logits + inf_mask, state
+        # A finite sentinel avoids float32 overflow in rollout diagnostics.
+        return logits.masked_fill(action_mask <= 0, -1e9), state
 
     def value_function(self):
         return self._value.reshape(-1)

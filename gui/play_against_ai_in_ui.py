@@ -2,47 +2,20 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Use legacy Keras 2 (tf_keras) for TF1 graph-mode compatibility with Ray RLlib
-os.environ['TF_USE_LEGACY_KERAS'] = '1'
-import tensorflow as tf
-tf.compat.v1.disable_eager_execution()
-import tqdm
-import pickle
+import argparse
+import ast
 import numpy as np
-
 from flask import Flask, render_template
-from flask_socketio import SocketIO,emit
-import time
-from threading import Thread
+from flask_socketio import SocketIO
 import threading
-import random
-import json
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ray.rllib.models import ModelCatalog
 from agi.nl_holdem_env import NlHoldemEnvWrapper
-from agi.nl_holdem_net_tf import NlHoldemNet
-ModelCatalog.register_custom_model('NlHoldemNet', NlHoldemNet)
-import numpy as np
-from tqdm import tqdm
-import pandas as pd
-from agi.evaluation_tools import NNAgent,death_match
+from agi.evaluation_tools import NNAgent
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-conf_path = os.path.join(base_dir, "confs/nl_holdem.py")
-conf = eval(open(conf_path).read().strip())
-# 6 players is the default setting
-num_players = conf.get("env_config", {}).get("custom_options", {}).get("num_players", 6)
-conf["env_config"]["custom_options"]["num_players"] = num_players
-env = NlHoldemEnvWrapper(
-    conf
-)
-weight_index = 1048
-nn_agent = NNAgent(env.observation_space,
-                        env.action_space,
-                        conf,
-                        os.path.join(base_dir, f"weights/c_{weight_index}.pkl"),
-                        f"oppo_c{weight_index}")
+conf = ast.literal_eval(open(os.path.join(base_dir, 'confs/nl_holdem.py')).read())
+num_players = conf['env_config']['custom_options']['num_players']
+nn_agent = None
+deterministic = False
 
 
 class MyThread():
@@ -121,7 +94,11 @@ class MyThread():
                 "action_recoards": action_recoards,
             }
         }
+        self.last_message = message
         return message
+
+    def resend_last_message(self):
+        socketio.emit('message_from_server', self.last_message)
 
     def _reset(self):
         obs = self.env.reset()
@@ -142,7 +119,7 @@ class MyThread():
         d = False
         r = [0] * self.num_players
         while self.env.my_agent() != self.human_id and not d:
-            action_ind = nn_agent.make_action(obs)
+            action_ind = nn_agent.make_action(obs, deterministic=deterministic)
             obs, r, d, i = self._step(action_ind)
 
         socketio.emit('message_from_server', self.gen_obs(r, d))
@@ -150,9 +127,11 @@ class MyThread():
     def send_message(self, message):
         action_id = message["action_id"]
         if action_id != 5:
+            if self.env.env.game.is_over() or self.env.my_agent() != self.human_id:
+                raise ValueError('It is not your turn')
             obs, r, d, i = self._step(message["action_id"])
             while self.env.my_agent() != self.human_id and not d:
-                action_ind = nn_agent.make_action(obs)
+                action_ind = nn_agent.make_action(obs, deterministic=deterministic)
                 obs, r, d, i = self._step(action_ind)
             socketio.emit('message_from_server', self.gen_obs(r, d))
         else:
@@ -163,7 +142,7 @@ class MyThread():
             )
             obs = self._reset()
             while self.env.my_agent() != self.human_id and not d:
-                action_ind = nn_agent.make_action(obs)
+                action_ind = nn_agent.make_action(obs, deterministic=deterministic)
                 obs, r, d, i = self._step(action_ind)
             socketio.emit('message_from_server', self.gen_obs(r, d))
 
@@ -200,7 +179,15 @@ def message_recieved(data):
 
 # Actually Start the App
 if __name__ == '__main__':
-    """ Run the app. """
-    #import webbrowser
-    #webbrowser.open("http://localhost:8000")
-    socketio.run(app,host="0.0.0.0", port=8000, debug=False)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--conf', default=os.path.join(base_dir, 'confs/nl_holdem.py'))
+    parser.add_argument('--weights', required=True, help='A newly trained six-player PyTorch .pkl')
+    parser.add_argument('--device', choices=['auto','cpu','cuda','mps'], default='cpu')
+    parser.add_argument('--deterministic', action='store_true')
+    args = parser.parse_args()
+    conf = ast.literal_eval(open(args.conf).read())
+    num_players = conf['env_config']['custom_options']['num_players']
+    deterministic = args.deterministic
+    env = NlHoldemEnvWrapper(conf)
+    nn_agent = NNAgent(env.observation_space, env.action_space, conf, args.weights, device=args.device)
+    socketio.run(app, host='127.0.0.1', port=8000, debug=False, allow_unsafe_werkzeug=True)

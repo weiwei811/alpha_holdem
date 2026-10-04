@@ -35,6 +35,7 @@ class NolimitholdemGame(Game):
         self.init_chips = [200] * num_players
 
         # If None, the dealer will be randomly chosen
+        self.configured_dealer_id = None
         self.dealer_id = None
 
     def configure(self, game_config):
@@ -45,7 +46,8 @@ class NolimitholdemGame(Game):
         self.num_players = game_config['game_num_players']
         # must have num_players length
         self.init_chips = [game_config['chips_for_each']] * game_config["game_num_players"]
-        self.dealer_id = game_config['dealer_id']
+        self.configured_dealer_id = game_config['dealer_id']
+        self.dealer_id = self.configured_dealer_id
 
     def init_game(self):
         """
@@ -59,6 +61,7 @@ class NolimitholdemGame(Game):
                 (dict): The first state of the game
                 (int): Current player's id
         """
+        self.dealer_id = self.configured_dealer_id
         if self.dealer_id is None:
             self.dealer_id = self.np_random.randint(0, self.num_players)
 
@@ -80,8 +83,8 @@ class NolimitholdemGame(Game):
         self.stage = Stage.PREFLOP
 
         # Big blind and small blind
-        s = (self.dealer_id + 1) % self.num_players
-        b = (self.dealer_id + 2) % self.num_players
+        s = self.dealer_id if self.num_players == 2 else (self.dealer_id + 1) % self.num_players
+        b = (s + 1) % self.num_players
         self.players[b].bet(chips=self.big_blind)
         self.players[s].bet(chips=self.small_blind)
 
@@ -140,48 +143,33 @@ class NolimitholdemGame(Game):
             d = deepcopy(self.dealer)
             p = deepcopy(self.public_cards)
             ps = deepcopy(self.players)
-            self.history.append((r, b, r_c, d, p, ps))
+            self.history.append((r, b, r_c, d, p, ps, self.stage))
 
         # Then we proceed to the next round
         self.game_pointer = self.round.proceed_round(self.players, action)
 
-        players_in_bypass = [1 if player.status in (PlayerStatus.FOLDED, PlayerStatus.ALLIN) else 0 for player in self.players]
-        if self.num_players - sum(players_in_bypass) == 1:
-            last_player = players_in_bypass.index(0)
-            if self.round.raised[last_player] >= max(self.round.raised):
-                # If the last player has put enough chips, he is also bypassed
-                players_in_bypass[last_player] = 1
-
-        # If a round is over, we deal more public cards
-        if self.round.is_over():
-            # Game pointer goes to the first player not in bypass after the dealer, if there is one
-            self.game_pointer = (self.dealer_id + 1) % self.num_players
-            if sum(players_in_bypass) < self.num_players:
-                while players_in_bypass[self.game_pointer]:
-                    self.game_pointer = (self.game_pointer + 1) % self.num_players
-
-            # For the first round, we deal 3 cards
-            if self.round_counter == 0:
-                self.stage = Stage.FLOP
-                self.public_cards.append(self.dealer.deal_card())
-                self.public_cards.append(self.dealer.deal_card())
-                self.public_cards.append(self.dealer.deal_card())
-                if len(self.players) == np.sum(players_in_bypass):
-                    self.round_counter += 1
-            # For the following rounds, we deal only 1 card
-            if self.round_counter == 1:
-                self.stage = Stage.TURN
-                self.public_cards.append(self.dealer.deal_card())
-                if len(self.players) == np.sum(players_in_bypass):
-                    self.round_counter += 1
-            if self.round_counter == 2:
-                self.stage = Stage.RIVER
-                self.public_cards.append(self.dealer.deal_card())
-                if len(self.players) == np.sum(players_in_bypass):
-                    self.round_counter += 1
-
-            self.round_counter += 1
-            self.round.start_new_round(self.game_pointer)
+        if not self.is_over() and self.round.is_over():
+            active = [i for i,p in enumerate(self.players) if p.status == PlayerStatus.ALIVE]
+            if len(active) <= 1:
+                # No further betting is possible; run out the board once.
+                while len(self.public_cards) < 5:
+                    self.public_cards.append(self.dealer.deal_card())
+                self.round_counter = 4
+                self.stage = Stage.SHOWDOWN
+            else:
+                self.round_counter += 1
+                if self.round_counter < 4:
+                    self.stage = Stage(self.round_counter)
+                    count = 3 if self.round_counter == 1 else 1
+                    self.public_cards.extend(self.dealer.deal_card() for _ in range(count))
+                    self.game_pointer = next((self.dealer_id + offset) % self.num_players
+                                             for offset in range(1, self.num_players + 1)
+                                             if (self.dealer_id + offset) % self.num_players in active)
+                    self.round.start_new_round(self.game_pointer)
+                else:
+                    self.stage = Stage.SHOWDOWN
+        if self.is_over() and self.stage != Stage.SHOWDOWN:
+            self.stage = Stage.END_HIDDEN
 
         state = self.get_state(self.game_pointer)
 
@@ -200,7 +188,7 @@ class NolimitholdemGame(Game):
         self.dealer.pot = np.sum([player.in_chips for player in self.players])
 
         chips = [self.players[i].in_chips for i in range(self.num_players)]
-        legal_actions = self.get_legal_actions()
+        legal_actions = [] if self.is_over() else self.get_legal_actions()
         state = self.players[player_id].get_state(self.public_cards, chips, legal_actions)
         state['stakes'] = [self.players[i].remained_chips for i in range(self.num_players)]
         state['current_player'] = self.game_pointer
@@ -216,8 +204,8 @@ class NolimitholdemGame(Game):
             (bool): True if the game steps back successfully
         """
         if len(self.history) > 0:
-            self.round, self.game_pointer, self.round_counter, self.dealer, self.public_cards, self.players = self.history.pop()
-            self.stage = Stage(self.round_counter)
+            self.round, self.game_pointer, self.round_counter, self.dealer, self.public_cards, self.players, self.stage = self.history.pop()
+            self.round.dealer = self.dealer
             return True
         return False
 
@@ -238,7 +226,7 @@ class NolimitholdemGame(Game):
             (list): Each entry corresponds to the payoff of one player
         """
         hands = [p.hand + self.public_cards if p.status in (PlayerStatus.ALIVE, PlayerStatus.ALLIN) else None for p in self.players]
-        chips_payoffs = self.judger.judge_game(self.players, hands)
+        chips_payoffs = self.judger.judge_game(self.players, hands, dealer_id=self.dealer_id)
         return chips_payoffs
 
     @staticmethod
