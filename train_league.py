@@ -82,8 +82,13 @@ def get_train(weight):
         print("LOAD: after init, before load")
 
         if pweight is not None:
-            agent.workers.local_worker().get_policy("default_policy").set_weights(pweight)
-            agent.workers.sync_weights()
+            agent.get_policy("default_policy").set_weights(pweight)
+            if hasattr(agent, "env_runner_group"):
+                agent.env_runner_group.sync_weights()
+            elif callable(agent.workers):
+                agent.workers().sync_weights()
+            else:
+                agent.workers.sync_weights()
 
         print("LOAD: before train, after load")
         while True:
@@ -166,6 +171,13 @@ class LeagueCallbacks(DefaultCallbacks):
         
         table_t = winrates_pd.T
         table_t["mbb/h"] = np.asarray(table_t["winrate"] / 2.0 * 1000.0, dtype=int)
+        
+        # Print the table fully to the terminal to bypass Ray Tune's truncation
+        print("\n" + "="*50)
+        print("CURRENT LEAGUE WINRATES:")
+        print(table_t.T.to_string())
+        print("="*50 + "\n")
+        
         result['winrates'] = table_t.T
         self.count += 1
         

@@ -20,22 +20,26 @@ class NlHoldemEnvWrapper(gym.Env):
         super().__init__()
         self.policy_config = policy_config
         seed = random.randint(0,1000000)
+        self.num_players = policy_config.get("env_config", {}).get("custom_options", {}).get("num_players", 6)
         self.env = rlcard.make(
             'no-limit-holdem',
             config={
                 'seed': seed,
-                'game_num_players': 6,
-                'allow_num_players': 6,
+                'game_num_players': self.num_players,
+                'allow_num_players': self.num_players,
             }
         )
         set_seed(seed)
         self.action_num = 5
         
+        # History slots per round and action_info channels depend on num_players
+        self.history_slots = policy_config.get("env_config", {}).get("custom_options", {}).get("history_len", 20 if self.num_players > 2 else 6)
+        self.action_info_rows = self.num_players + 2  # player channels + aggregate + legal actions
         
         space = {
                 'card_info': spaces.Box(low=-1024, high=1024, shape=(4,13,6)),
-                'action_info': spaces.Box(low=-256, high=256, shape=(8,self.action_num,4 * 20 + 1)),
-                'extra_info': spaces.Box(low=-256, high=256, shape=(6,)),
+                'action_info': spaces.Box(low=-256, high=256, shape=(self.action_info_rows, self.action_num, 4 * self.history_slots + 1)),
+                'extra_info': spaces.Box(low=-256, high=256, shape=(self.num_players,)),
                 'legal_moves': spaces.Box(
                     low=-1,
                     high=1,
@@ -50,9 +54,9 @@ class NlHoldemEnvWrapper(gym.Env):
 
     def _get_observation(self,obs):
         card_info = np.zeros([4,13,6],np.uint8)
-        action_info = np.zeros([8,self.action_num,4 * 20 + 1],np.uint8)
-        extra_info = np.zeros([6],np.uint8)
-        legal_actions_info = np.zeros([self.action_num],np.uint8) # 25 channel
+        action_info = np.zeros([self.action_info_rows, self.action_num, 4 * self.history_slots + 1],np.uint8)
+        extra_info = np.zeros([self.num_players],np.uint8)
+        legal_actions_info = np.zeros([self.action_num],np.uint8)
         
         hold_card = obs[0]["raw_obs"]["hand"]
         public_card = obs[0]["raw_obs"]["public_cards"]
@@ -85,16 +89,16 @@ class NlHoldemEnvWrapper(gym.Env):
             
         
         for ind_round,one_history in enumerate(self.history):
-            for ind_h,(player_id,action_id,legal_actions) in enumerate(one_history[:20]):
-                action_info[player_id,action_id,ind_round * 20 + ind_h] = 1
-                action_info[6,action_id,ind_round * 20 + ind_h] = 1
+            for ind_h,(player_id,action_id,legal_actions) in enumerate(one_history[:self.history_slots]):
+                action_info[player_id,action_id,ind_round * self.history_slots + ind_h] = 1
+                action_info[self.num_players,action_id,ind_round * self.history_slots + ind_h] = 1
                 
                 for la_ind in legal_actions:
-                    action_info[7,la_ind,ind_round * 20 + ind_h] = 1
+                    action_info[self.num_players + 1,la_ind,ind_round * self.history_slots + ind_h] = 1
                     
         action_info[:,:,-1] = self.my_agent()
         
-        for i in range(6):
+        for i in range(self.num_players):
             extra_info[i] = obs[0]["raw_obs"]["stakes"][i]
         
         return {
@@ -127,7 +131,7 @@ class NlHoldemEnvWrapper(gym.Env):
         obs = self._get_observation(obs)
         
         done = False
-        reward = [0 for _ in range(6)]
+        reward = [0 for _ in range(self.num_players)]
         info = {}
         if self.env.game.is_over():
             done = True
@@ -186,7 +190,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
 
     def _opponent_step(self,obs):
         if self.opponent == "random":
-            rwd = [0 for _ in range(6)]
+            rwd = [0 for _ in range(self.num_players)]
             done = False
             info = {}
             while self.my_agent() != self.our_pid:
@@ -197,7 +201,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
                     break
             return obs,rwd,done,info
         elif self.opponent == "nn":
-            rwd = [0 for _ in range(6)]
+            rwd = [0 for _ in range(self.num_players)]
             done = False
             info = {}
             while self.my_agent() != self.our_pid:
@@ -216,7 +220,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
             np.random.seed(seed)
         self.last_reward = 0
         self.is_done = False
-        self.our_pid = random.randint(0,5)
+        self.our_pid = random.randint(0, self.num_players - 1)
         
         obs = super(NlHoldemEnvWithOpponent, self)._inner_reset()
         
