@@ -56,18 +56,20 @@ class NlHoldemNet(TorchModelV2, nn.Module):
             ResBlock(width * 2, final, 3, 2),
         )
         
+        # Hidden layers need unit-scale features/gradients; only the policy head
+        # uses small initialization to start with mild action preferences.
         self.extra_fc = nn.Sequential(
-            SlimFC(players * (6 if self.has_table_info else 1), 16, initializer=normc_initializer(0.01), activation_fn="relu")
+            SlimFC(players * (6 if self.has_table_info else 1), 16, initializer=normc_initializer(1.0), activation_fn="relu")
         )
         
         self.fc = nn.Sequential(
-            SlimFC(final * (4 + ((action_shape[0] + 3) // 4) * ((action_shape[1] + 3) // 4)) + 16, 256, initializer=normc_initializer(0.01), activation_fn="relu"),
-            SlimFC(256, 128, initializer=normc_initializer(0.01), activation_fn="relu"),
-            SlimFC(128, 64, initializer=normc_initializer(0.01), activation_fn="relu")
+            SlimFC(final * (4 + ((action_shape[0] + 3) // 4) * ((action_shape[1] + 3) // 4)) + 16, 256, initializer=normc_initializer(1.0), activation_fn="relu"),
+            SlimFC(256, 128, initializer=normc_initializer(1.0), activation_fn="relu"),
+            SlimFC(128, 64, initializer=normc_initializer(1.0), activation_fn="relu")
         )
         
         self.conv_fuse = SlimFC(64, num_outputs, initializer=normc_initializer(0.01), activation_fn=None)
-        self.value_out = SlimFC(64, 1, initializer=normc_initializer(0.01), activation_fn=None)
+        self.value_out = SlimFC(64, 1, initializer=normc_initializer(1.0), activation_fn=None)
 
     def forward(self, input_dict, state, seq_lens):
         card_info = input_dict["obs"]["card_info"].float()

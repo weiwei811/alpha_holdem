@@ -75,68 +75,90 @@ Run the suite with the matching environment:
 .venv/bin/python -m pytest tests -q
 ```
 
-Windows CPU/CUDA verification passed **36 tests**, with **2 MPS hardware tests skipped**.
+Windows CPU/CUDA verification passed **38 tests**, with **2 MPS hardware tests skipped**.
 
 ## Train six players
 
 There are two training launchers: `run_training.ps1` for Windows and `run_training.sh` for Mac/Linux. Both use the repository's `.venv`, forward all CLI arguments, and share the Python entry point's defaults:
 
 ```powershell
-.\run_training.ps1 --device cuda --workers 2 --gap 500
+.\run_training.ps1 --device cuda --workers 2 --checkpoint-steps 10000
 ```
 
 ```sh
-sh run_training.sh --device cpu --workers 2 --gap 500
+sh run_training.sh --device cpu --workers 2 --checkpoint-steps 10000
 # Apple Silicon GPU (experimental): use --device mps
 ```
 
 
 ```powershell
-.\.venv\Scripts\python.exe train_league.py --conf confs/nl_holdem.py --workers 2 --gap 500
+.\.venv\Scripts\python.exe train_league.py --conf confs/nl_holdem.py --workers 2 --checkpoint-steps 10000
 ```
 
 Without `--iterations`, training continues until stopped. A bounded verification run is:
 
 ```powershell
-.\.venv\Scripts\python.exe train_league.py --workers 1 --batch-size 100 --iterations 1 --gap 1 --output_dir league/quick_check
+.\.venv\Scripts\python.exe train_league.py --workers 1 --batch-size 100 --iterations 1 --checkpoint-steps 200 --output_dir league/quick_check
 ```
 
 Defaults use six seats, 200 chips (100 big blinds), automatic learner-device selection, and two CPU rollout workers. The learner controls a randomly selected seat and the other five seats use a shared historical policy. All seats become learner seats across episodes. Opponents are selected before the first action. League profit includes hands ending before a learner decision (such as blind walks); those hands produce no learner training transition. This is a six-player self-play environment, with one learner trajectory per hand; it is not a six-policy multi-agent RLlib environment.
 
-The four street histories keep separate seat IDs and include folds. The most recent `history_len` actions per street are retained; persistent seat status remains visible after history truncation. Observations also contain remaining stacks, contributions, alive/all-in status, button, and acting seat. Card and history tensors are binary floats; chip counts do not wrap at 255. The models derive dimensions from the observation space.
+The four street histories keep separate seat IDs and include folds. The most recent `history_len` actions per street are retained; persistent seat status remains visible after history truncation. Observations also contain remaining stacks, contributions, alive/all-in status, button, and acting seat. Card and history tensors are binary floats; chip counts do not wrap at 255. The models derive dimensions from the observation space. Hidden and value layers use unit-scale initialization; the policy head uses scale 0.01 to begin with mild action preferences. Existing checkpoint tensors load unchanged; the new initialization applies to freshly trained models.
 
 Learner rewards are net chips divided by `reward_scale` (default 200), multiplied by `rwd_ratio` (default 1). League statistics remain raw mean chip profit per hand, despite the historical `winrate` field name. Big blind is 2 chips, so mbb/hand is mean chip profit multiplied by 500. `--upwin` is a mean-chip-profit threshold, not a probability of winning.
 
-Resume from a matching newly trained league:
+`--training-seconds 3600` stops after an hour of training and saves full state at the end of the current iteration. SIGINT/SIGTERM also request a graceful save. Initialization and final saving add a little wall time.
+
+Training progress is measured in **trained transitions**, not reporting iterations. An iteration can perform zero, one, or several optimizer updates. Checkpoints default to every 10,000 trained transitions and evaluations to every 50,000. Batch and minibatch sizes must be positive multiples of the configured rollout fragment (50 by default). Metrics collection waits at most one second by default (`--metrics-timeout`).
+
+Train to an absolute transition target (the last batch may overshoot):
 
 ```powershell
-.\.venv\Scripts\python.exe train_league.py --restore league/history_agents --workers 2
+.\.venv\Scripts\python.exe train_league.py --device cuda --workers 2 --trained-steps 1000000 --checkpoint-steps 10000 --eval-steps 50000 --eval-hands 600 --output_dir league/run_6p
 ```
 
-Snapshots are under `OUTPUT_DIR/weights/c_N.pkl`. Every completed iteration atomically saves the latest learner to `OUTPUT_DIR/output_weight.pkl`; bounded runs also save `training_config.json`. Logs are inside `work/ray_results/`. Restore prefers `OUTPUT_DIR/output_weight.pkl` for the learner and falls back to the latest `c_N.pkl` for older runs. Historical `c_N.pkl` files remain the opponent pool. These weight snapshots resume policies and league rewards; they do not restore optimizer state, RNG state, or the exact training iteration.
+Resume optimizer state, trained-step counters, and the historical league pool/statistics from the latest full checkpoint:
+
+```powershell
+.\.venv\Scripts\python.exe train_league.py --restore-state league/run_6p --output_dir league/run_6p --device cuda --workers 2 --trained-steps 2000000
+```
+
+Use the same model, observation and batch configuration when resuming. On Mac/Linux, use `.venv/bin/python` and `--device cpu` or experimental `--device mps`. The transition target is absolute, including restored progress; an already reached target does no further training. Full checkpoints are indexed by `OUTPUT_DIR/latest_checkpoint.json`. In-flight hands, asynchronous queues and random-number streams are not restored for exact replay.
+
+For a weight-only restart with fresh optimizer/counters:
+
+```powershell
+.\.venv\Scripts\python.exe train_league.py --restore league/run_6p --output_dir league/restarted --workers 2
+```
+
+Fresh runs save the actual starting learner as `OUTPUT_DIR/initial_weight.pkl`. Historical opponents are under `OUTPUT_DIR/weights/c_N.pkl`; `output_weight.pkl` contains the latest learner. Full checkpoints also preserve league match counts and smoothed rewards. Older weight-only directories restore opponent weights/rewards but reset match counts. Bounded runs save `training_config.json`; logs are inside `work/ray_results/`.
+
+Periodic evaluations append `OUTPUT_DIR/evaluation.jsonl`, with trained transitions, optimizer updates, chips per hand and approximate 95% confidence intervals against random legal actions, check/call, and the frozen initial policy. Each evaluation reuses the seed bank and rotates hero seats. Evaluation runs on CPU and pauses the training driver; 600 hands per opponent is a quick diagnostic, not proof of strength. Use thousands of hands and paired comparisons for conclusions. `--eval-steps 0` disables evaluations; enabled evaluations require the original initial checkpoint.
+
+Use `--freeze-opponents --sp 0` to keep the historical opponent pool fixed during a controlled comparison. Otherwise progress checkpoints add the current learner to the pool. `--checkpoint-steps 0` disables periodic checkpoints; bounded runs still save at exit. The legacy `--gap N` maps to `N * train_batch_size` trained transitions; `--upwin` is retained but no longer controls snapshots.
 
 ## Select a training device
 
 ### Windows CUDA
 
 ```powershell
-.\.venv\Scripts\python.exe train_league.py --device cuda --workers 2 --gap 500
+.\.venv\Scripts\python.exe train_league.py --device cuda --workers 2 --checkpoint-steps 10000
 ```
 
 ### macOS CPU or experimental Apple Silicon GPU
 
 ```sh
 # CPU
-.venv/bin/python train_league.py --device cpu --workers 2 --gap 500
+.venv/bin/python train_league.py --device cpu --workers 2 --checkpoint-steps 10000
 # Metal/MPS, experimental
-.venv/bin/python train_league.py --device mps --workers 2 --gap 500
+.venv/bin/python train_league.py --device mps --workers 2 --checkpoint-steps 10000
 ```
 
 `--device auto` prioritizes CUDA, then MPS, then CPU. Use `--device cpu` to force CPU. An explicitly requested unavailable device fails clearly. The earlier `--gpus 1` remains a CUDA alias; `--gpus 0` forces CPU when device is auto. This entry point supports **one learner GPU**. Rollout workers and opponent policies remain on CPU.
 
 MPS training uses a single-device adapter around the pinned old RLlib policy stack. It moves the learner and batches to Metal and bypasses RLlib's CUDA-only gradient context. The adapter's update path was tested against real IMPALA/V-trace loss on CPU and CUDA, but **actual Metal training remains experimental and unverified on Mac hardware**. Use CPU if an MPS operation is unsupported. Intel CPU is the conservative path; AMD-backed MPS availability depends on the installed PyTorch/macOS/hardware combination.
 
-For a bounded GPU check on either platform, add `--batch-size 200 --iterations 1 --gap 1 --output_dir league/gpu_check`. Without `--iterations`, training runs continuously. On a 6 GB GPU, start with the default model and batch size before increasing memory use. Model-update speed improved in the local CUDA benchmark, but CPU game simulation can limit total training throughput.
+For a bounded GPU check on either platform, add `--batch-size 200 --iterations 1 --checkpoint-steps 200 --output_dir league/gpu_check`. Without `--iterations`, training runs continuously. On a 6 GB GPU, start with the default model and batch size before increasing memory use. Model-update speed improved in the local CUDA benchmark, but CPU game simulation can limit total training throughput.
 
 Weight snapshots contain NumPy arrays. With matching model and observation configuration, device selection does not change parameter shapes or the checkpoint format. CPU/CUDA portability was verified; loading and running on MPS still requires a Mac hardware check.
 
@@ -219,3 +241,15 @@ It's illegal to use this code in any way to commercial purpose, including resear
 
 Especially for Chinese company JJ world(竞技世界). You'd better look elseware.
 
+
+## One-hour Modal T4 training
+
+Install the optional Modal CLI (`pip install modal`) and authenticate (`modal token new`). From the repository root:
+
+```sh
+modal run --detach tools/modal_t4_one_hour.py
+```
+
+The script uploads only training source/configs and bundled game data. It requests one T4, 16 CPU cores, 16 GiB RAM (24 GiB cap), 14 rollout workers and 4,000-transition batches. Runtime math threads are limited to one per worker to prevent Modal's container defaults from oversubscribing CPUs. It trains for one hour, saves full state, logs resource usage and persists results in the `alpha-holdem-budget-results` volume. Held-out evaluation is disabled during this timed run; evaluate the saved initial/final weights afterward. The estimated compute cost is about $1.55–$1.67 per run at the October 2026 published rates, excluding other usage/storage; verify current pricing before launching.
+
+Set a **new unique `RUN_ID`** in the script before every launch to preserve previous results. The launch record is saved to `work/t4_one_hour_launch.json`. Training continues after the local command exits. Retrieve the exact run directory with `modal volume get alpha-holdem-budget-results RUN_ID work/modal_results`. The wrapper has a shutdown watchdog and no retries; logs/checkpoints remain available if the process fails.

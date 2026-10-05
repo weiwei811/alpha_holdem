@@ -76,6 +76,23 @@ class League():
         if initial_weight is not None:
             self.add_weight(initial_weight)
 
+    def export_state(self):
+        return {key: getattr(self, key) for key in (
+            'weights_dic', 'current_pid', 'pids', 'winrates',
+            'selfplay_winrate', 'n', 'last_num', 'kbest')}
+
+    def restore_state(self, state):
+        for key, value in state.items():
+            setattr(self, key, value)
+        # Materialize the pool in the new output directory for weight-only users.
+        if self.output_dir:
+            directory = os.path.join(self.output_dir, 'weights')
+            os.makedirs(directory, exist_ok=True)
+            for pid, weight in self.weights_dic.items():
+                with open(os.path.join(directory, f'c_{pid}.pkl'), 'wb') as stream:
+                    pickle.dump(weight, stream)
+            self.get_statics_table()
+
     def get_all_weights_dic(self):
         return self.weights_dic
     

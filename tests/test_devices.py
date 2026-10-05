@@ -97,3 +97,14 @@ def test_portable_single_device_adapter_updates_real_impala_policy(device):
     after = policy.get_weights()
     assert all(np.isfinite(v).all() for v in after.values())
     assert any(not np.array_equal(before[k],v) for k,v in after.items())
+
+    saved = policy.get_state()
+    assert saved['num_grad_updates'] > 0
+    policy.num_grad_updates = 0
+    policy.set_state(saved)
+    assert policy.num_grad_updates == saved['num_grad_updates']
+    restored = policy.get_state()
+    for original, resumed in zip(saved['_optimizer_variables'], restored['_optimizer_variables']):
+        for key, value in original['state'].items():
+            for field in ('step', 'exp_avg', 'exp_avg_sq'):
+                np.testing.assert_array_equal(value[field], resumed['state'][key][field])

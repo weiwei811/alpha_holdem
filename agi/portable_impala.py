@@ -60,6 +60,11 @@ class PortableImpalaTorchPolicy(ImpalaTorchPolicy):
             from agi.devices import resolve_device
             move_policy_to_device(self, resolve_device('mps'))
 
+    def set_state(self, state):
+        super().set_state(state)
+        # Ray's old policy stack saves this counter but does not restore it.
+        self.num_grad_updates = int(state.get('num_grad_updates', 0))
+
     def _multi_gpu_parallel_grad_calc(self, sample_batches):
         if getattr(self, '_metal_learner', False):
             return single_device_gradients(self, sample_batches)
