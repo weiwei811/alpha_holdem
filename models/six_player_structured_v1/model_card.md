@@ -16,6 +16,6 @@ Settings: structured six-player model, entropy 0.02, ranked historical sampling,
 
 Health: 2,828,000 transitions, 707 updates, 689,990 parameters; finite weights: True.
 
-Repository files: `weights.pkl` for inference and `training_config.json` for the matching architecture. Full optimizer/league state stays in Modal volume `alpha-holdem-budget-results`, under `six-player-20261006-lowentropy-final-1h/league/`; it is not included in this inference package.
+Repository files: `six_player_best_2026-10-06.pkl` for the dated best verified inference checkpoint (`weights.pkl` is an identical compatibility copy) and `training_config.json` for the matching architecture. Full optimizer/league state stays in Modal volume `alpha-holdem-budget-results`, under `six-player-20261006-lowentropy-final-1h/league/`; it is not included in this inference package.
 
 Limits: one training seed and fixed benchmark opponents. Positive benchmark profit and improvement do not establish optimal poker play or exploitability. The screen did not isolate a significant entropy effect; the final result measures the complete continuation recipe.

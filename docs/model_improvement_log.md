@@ -49,3 +49,5 @@ Packaged the verified inference weights/config/report in `models/six_player_stru
 ## Budget
 
 Conservative compute reservations (not a billing statement): probe $0.15; settings screen $1.26; report recovery/export $0.01; bounded hour $1.67; two final evaluations $0.26; combined report/package $0.01. **Total ≤$3.36 of $5**. No further training is running or needed for this verified result.
+
+Published dated best checkpoint: `models/six_player_structured_v1/six_player_best_2026-10-06.pkl`. SHA-256 verified identical to the evaluated weights; README usage points to the dated file.

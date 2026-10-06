@@ -323,10 +323,10 @@ The 2026-10-06 structured-model experiment matched both pilots at 1,404,000 cumu
 
 ### Use the included trained model
 
-The verified inference package is checked into [models/six_player_structured_v1](models/six_player_structured_v1). After installing the environment described above, activate it and run from the repository root:
+The verified inference package is checked into [models/six_player_structured_v1](models/six_player_structured_v1). The newest best verified checkpoint is [six_player_best_2026-10-06.pkl](models/six_player_structured_v1/six_player_best_2026-10-06.pkl); `weights.pkl` remains an identical compatibility copy. After installing the environment described above, activate it and run from the repository root:
 
 ```bash
-python gui/play_against_ai_in_ui.py --conf confs/nl_holdem_structured.py --weights models/six_player_structured_v1/weights.pkl --device cpu
+python gui/play_against_ai_in_ui.py --conf confs/nl_holdem_structured.py --weights models/six_player_structured_v1/six_player_best_2026-10-06.pkl --device cpu
 ```
 
 Open `http://127.0.0.1:8000` to play at a six-player table. Windows can use `.venv\Scripts\python.exe`; macOS can use `.venv/bin/python`. CPU is sufficient for individual decisions. Use `--device cuda` for NVIDIA CUDA, or `--device mps` for experimental Apple Silicon inference. Add `--deterministic` to always choose the highest-probability legal action. The reported benchmarks used sampling, so deterministic play can perform differently.
@@ -343,7 +343,7 @@ folder = Path("models/six_player_structured_v1")
 conf = json.loads((folder / "training_config.json").read_text())
 env = NlHoldemEnvWrapper(conf)
 agent = NNAgent(env.observation_space, env.action_space, conf,
-                folder / "weights.pkl", device="cpu", seed=42)
+                folder / "six_player_best_2026-10-06.pkl", device="cpu", seed=42)
 obs, _ = env.reset(seed=42)
 action = agent.make_action(obs)  # Decision for env.my_agent(), the current seat
 obs, payoffs, done, _, info = env.step(action)
