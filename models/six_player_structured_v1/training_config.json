@@ -1,0 +1,38 @@
+{
+  "env": "NlHoldemEnvWithOpponent",
+  "rollout_fragment_length": 200,
+  "train_batch_size": 4000,
+  "num_envs_per_env_runner": 1,
+  "num_gpus": 1,
+  "gamma": 1,
+  "entropy_coeff": 0.02,
+  "lr": 0.0003,
+  "model": {
+    "custom_model": "NlHoldemStructuredNet",
+    "custom_model_config": {
+      "relative_seats": true,
+      "separate_critic": true
+    }
+  },
+  "env_config": {
+    "custom_options": {
+      "history_len": 20,
+      "num_players": 6,
+      "betting_features": true
+    },
+    "learner_device": "cuda"
+  },
+  "num_env_runners": 14,
+  "seed": 42,
+  "minibatch_size": 4000,
+  "num_cpus_for_main_process": 1,
+  "min_time_s_per_iteration": 10,
+  "metrics_episode_collection_timeout_s": 1.0,
+  "learner_queue_size": 3,
+  "num_gpu_loader_threads": 2,
+  "learner_queue_timeout": 600,
+  "num_gpus_per_env_runner": 0,
+  "min_sample_timesteps_per_iteration": 0,
+  "min_train_timesteps_per_iteration": 4000,
+  "entropy_coeff_schedule": null
+}

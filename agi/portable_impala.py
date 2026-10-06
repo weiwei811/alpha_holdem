@@ -60,6 +60,20 @@ class PortableImpalaTorchPolicy(ImpalaTorchPolicy):
             from agi.devices import resolve_device
             move_policy_to_device(self, resolve_device('mps'))
 
+    def stats_fn(self, train_batch):
+        stats = super().stats_fn(train_batch)
+        # Scaled rollout diagnostics distinguish noisy poker returns from a
+        # reward/termination data-flow fault. Avoid changing the native loss.
+        rewards = torch.as_tensor(train_batch['rewards']).detach().float()
+        terminals = torch.as_tensor(train_batch['terminateds']).detach().float()
+        stats.update(reward_mean=float(rewards.mean().cpu()),
+                     reward_abs_max=float(rewards.abs().max().cpu()),
+                     terminal_fraction=float(terminals.mean().cpu()))
+        if 'vf_preds' in train_batch:
+            values = torch.as_tensor(train_batch['vf_preds']).detach().float()
+            stats['sampled_value_std'] = float(values.std(unbiased=False).cpu())
+        return stats
+
     def set_state(self, state):
         super().set_state(state)
         # Ray's old policy stack saves this counter but does not restore it.
@@ -75,3 +89,15 @@ class PortableImpala(Impala):
     @classmethod
     def get_default_policy_class(cls, config):
         return PortableImpalaTorchPolicy
+
+
+def configure_entropy(policy, coefficient):
+    """Apply an intentional coefficient change after RLlib restores policy config."""
+    import math
+    from ray.rllib.policy.torch_mixins import EntropyCoeffSchedule
+    coefficient = float(coefficient)
+    if not math.isfinite(coefficient) or coefficient < 0:
+        raise ValueError('Entropy coefficient must be finite and nonnegative')
+    policy.config['entropy_coeff'] = coefficient
+    policy.config['entropy_coeff_schedule'] = None
+    EntropyCoeffSchedule.__init__(policy, coefficient, None)

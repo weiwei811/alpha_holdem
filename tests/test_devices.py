@@ -34,14 +34,15 @@ def test_cpu_override_and_mps_resource_configuration(monkeypatch):
 
 
 @pytest.mark.parametrize('device', ['cpu','cuda','mps'])
-def test_inference_and_backward_on_available_device(device):
+@pytest.mark.parametrize('model_name', ['NlHoldemNet','NlHoldemStructuredNet'])
+def test_inference_and_backward_on_available_device(device, model_name):
     if device == 'cuda' and not torch.cuda.is_available():
         pytest.skip('CUDA hardware/build unavailable')
     if device == 'mps' and not torch.backends.mps.is_available():
         pytest.skip('MPS hardware/build unavailable')
     from agi.nl_holdem_env import NlHoldemEnvWrapper
     from agi.evaluation_tools import NNAgent
-    conf = {'env_config': {'custom_options': {'num_players': 6}}, 'model': {'custom_model': 'NlHoldemNet'}}
+    conf = {'env_config': {'custom_options': {'num_players': 6, 'betting_features': model_name == 'NlHoldemStructuredNet'}}, 'model': {'custom_model': model_name}}
     env = NlHoldemEnvWrapper(conf)
     obs,_ = env.reset(seed=5)
     agent = NNAgent(env.observation_space, env.action_space, conf, None, device=device)
@@ -56,7 +57,8 @@ def test_inference_and_backward_on_available_device(device):
 
 
 @pytest.mark.parametrize('device', ['cpu','cuda','mps'])
-def test_portable_single_device_adapter_updates_real_impala_policy(device):
+@pytest.mark.parametrize('model_name', ['NlHoldemNet','NlHoldemStructuredNet'])
+def test_portable_single_device_adapter_updates_real_impala_policy(device, model_name):
     if device == 'cuda' and not torch.cuda.is_available():
         pytest.skip('CUDA hardware/build unavailable')
     if device == 'mps' and not torch.backends.mps.is_available():
@@ -66,14 +68,17 @@ def test_portable_single_device_adapter_updates_real_impala_policy(device):
     from agi.nl_holdem_env import NlHoldemEnvWrapper
     from agi.nl_holdem_net import NlHoldemNet
     from agi.portable_impala import PortableImpalaTorchPolicy, move_policy_to_device
+    from agi.nl_holdem_structured_net import NlHoldemStructuredNet
     ModelCatalog.register_custom_model('NlHoldemNet', NlHoldemNet)
-    conf = {'env_config': {'custom_options': {'num_players': 6}}, 'model': {'custom_model': 'NlHoldemNet'}}
+    ModelCatalog.register_custom_model('NlHoldemStructuredNet', NlHoldemStructuredNet)
+    conf = {'env_config': {'custom_options': {'num_players': 6, 'betting_features': model_name == 'NlHoldemStructuredNet'}}, 'model': {'custom_model': model_name}}
     env = NlHoldemEnvWrapper(conf)
     obs,_ = env.reset(seed=5)
     prep = ModelCatalog.get_preprocessor_for_space(env.observation_space)
     config = (ImpalaConfig().framework('torch').resources(num_gpus=0)
               .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False))
-    config.model['custom_model'] = 'NlHoldemNet'
+    config.model['custom_model'] = model_name
+    config.env_config = conf['env_config']
     config.rollout_fragment_length = 4
     policy = PortableImpalaTorchPolicy(prep.observation_space,env.action_space,config.to_dict())
     move_policy_to_device(policy, torch.device(device))

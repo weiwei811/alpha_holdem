@@ -13,7 +13,7 @@ import uuid
 import signal
 import time
 from pathlib import Path
-from agi.training_progress import StepInterval, validate_batches, evaluate_weights
+from agi.training_progress import StepInterval, validate_batches, evaluate_weights, validate_restore_configuration
 
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.models import ModelCatalog
@@ -23,9 +23,11 @@ from ray.tune.registry import register_env
 from agi.nl_holdem_env import NlHoldemEnvWithOpponent
 from agi.nl_holdem_net import NlHoldemNet
 from agi.nl_holdem_lg_net import NlHoldemLgNet
+from agi.nl_holdem_structured_net import NlHoldemStructuredNet
 
 ModelCatalog.register_custom_model('NlHoldemNet', NlHoldemNet)
 ModelCatalog.register_custom_model('NlHoldemLgNet', NlHoldemLgNet)
+ModelCatalog.register_custom_model('NlHoldemStructuredNet', NlHoldemStructuredNet)
 
 from agi.league import League
 
@@ -54,6 +56,8 @@ def main():
     parser.add_argument('--eval-hands', type=int, default=600)
     parser.add_argument('--trained-steps', type=int, default=0, help='Absolute trained-transition target; 0 has no target.')
     parser.add_argument('--metrics-timeout', type=float, default=1.0)
+    parser.add_argument('--entropy-coeff', type=float, default=None, help='Explicit entropy regularization override, applied after full-state restore.')
+    parser.add_argument('--opponent-sampling', choices=['ranked', 'uniform'], default='ranked', help='Historical pool sampling strategy; uniform is useful for controlled diversity experiments.')
     parser.add_argument('--freeze-opponents', action='store_true', help='Keep the initial historical pool fixed for controlled comparisons.')
     parser.add_argument('--restore-state', type=str, help='Run directory containing latest_checkpoint.json; restores RLlib optimizer and counters.')
     parser.add_argument('--training-seconds', type=float, default=0, help='Stop gracefully after this many training seconds; 0 is unlimited.')
@@ -71,6 +75,11 @@ def main():
         if not 0 <= probability <= 1:
             parser.error('Probabilities must be between 0 and 1')
     conf = ast.literal_eval(open(args.conf).read())
+    if args.entropy_coeff is not None:
+        if not np.isfinite(args.entropy_coeff) or args.entropy_coeff < 0:
+            parser.error('entropy-coeff must be finite and nonnegative')
+        conf['entropy_coeff'] = args.entropy_coeff
+        conf['entropy_coeff_schedule'] = None
     if args.workers is not None:
         conf['num_env_runners'] = args.workers
     if args.batch_size is not None:
@@ -82,6 +91,8 @@ def main():
     conf['metrics_episode_collection_timeout_s'] = args.metrics_timeout
     try:
         validate_batches(conf)
+        if args.restore_state or args.restore:
+            validate_restore_configuration(conf, args.restore_state or args.restore)
     except ValueError as error:
         parser.error(str(error))
 
@@ -195,6 +206,7 @@ def main():
             restore_weights = get_winrate_and_weight(restore_directory, league)
     elif args.restore:
         restore_weights = get_winrate_and_weight(restore_directory, league)
+    ray.get(league.set_sampling_strategy.remote(args.opponent_sampling))
     agent = None
     try:
         logdir = os.path.abspath(os.path.join('work', 'ray_results', args.experiment_name))
@@ -212,6 +224,10 @@ def main():
             agent.get_policy().set_weights(restore_weights)
             agent.env_runner_group.sync_weights()
             print("Restored learner weights from " + args.restore, flush=True)
+        if args.entropy_coeff is not None:
+            from agi.portable_impala import configure_entropy
+            configure_entropy(agent.get_policy(), args.entropy_coeff)
+            print('Applied learner entropy coefficient: {}'.format(args.entropy_coeff), flush=True)
         # Capture the actual learner baseline, not an independently initialized worker.
         if restore_directory is None:
             initial_weights = agent.get_policy().get_weights()
@@ -234,6 +250,10 @@ def main():
         evaluation_interval = StepInterval(args.eval_steps, steps)
 
         def save_state():
+            config_path = output / 'training_config.json'
+            config_temp = output / 'training_config.json.tmp'
+            config_temp.write_text(json.dumps(conf, indent=2))
+            config_temp.replace(config_path)
             relative = 'checkpoints/step_{}_{}'.format(steps, uuid.uuid4().hex[:8])
             destination = output / relative
             destination.mkdir(parents=True, exist_ok=True)

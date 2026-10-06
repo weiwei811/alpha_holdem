@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from agi.nl_holdem_net import NlHoldemNet
 from agi.nl_holdem_lg_net import NlHoldemLgNet
+from agi.nl_holdem_structured_net import NlHoldemStructuredNet
 
 
 def action_probabilities(logits, legal_moves, temperature=1.0):
@@ -32,7 +33,7 @@ class NNAgent:
         self.rng = np.random.default_rng(seed)
         config = policy_config.get('model', {})
         model_name = config.get('custom_model', 'NlHoldemNet')
-        models = {'NlHoldemNet': NlHoldemNet, 'NlHoldemLgNet': NlHoldemLgNet}
+        models = {'NlHoldemNet': NlHoldemNet, 'NlHoldemLgNet': NlHoldemLgNet, 'NlHoldemStructuredNet': NlHoldemStructuredNet}
         if model_name not in models:
             raise ValueError('Unknown inference model: ' + model_name)
         self.model = models[model_name](observation_space, action_space,
@@ -82,10 +83,18 @@ class NNAgent:
                     'allin': PlayerStatus.ALLIN}
         for i,p in enumerate(env.env.game.players):
             p.in_chips = board['contributions'][i]
+            p.remained_chips = board['stakes'][i]
             p.status = statuses[board['statuses'][i]]
         env.env.game.game_pointer = actor
         env.env.game.dealer_id = dealer
         env.history = history
+        if env.betting_features:
+            if 'street_contributions' not in board or 'last_raise_amount' not in board:
+                raise ValueError('Betting features require street_contributions and last_raise_amount')
+            if len(board['street_contributions']) != n:
+                raise ValueError('street_contributions must include every seat')
+            env.env.game.round.raised = list(board['street_contributions'])
+            env.env.game.round.last_raise_amount = float(board['last_raise_amount'])
         raw = dict(board, legal_actions=[Action(i) for i in board['legal_moves']])
         return self.make_action(env._get_observation(({'raw_obs': raw}, actor)),
                                 deterministic=deterministic, temperature=temperature)

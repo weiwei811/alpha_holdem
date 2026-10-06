@@ -62,9 +62,20 @@ class WinrateTracker():
         self.clp_n = np.clip(self.n,self.nmin,self.nmax)
         self.v = self.v * (self.clp_n - 1) / self.clp_n + v / self.clp_n
         
+def opponent_probabilities(win_rates, strategy='ranked', k=5):
+    if not len(win_rates):
+        raise ValueError('Opponent pool must not be empty')
+    if strategy == 'uniform':
+        return np.ones(len(win_rates)) / len(win_rates)
+    if strategy == 'ranked':
+        return kbsp(win_rates, k=k)
+    raise ValueError('Unknown opponent sampling strategy: ' + strategy)
+
+
 @ray.remote
 class League():
     def __init__(self,initial_weight=None,n=500,last_num=1000,kbest=5,output_dir=None):
+        self.sampling_strategy = "ranked"
         self.weights_dic = {}
         self.current_pid = -1
         self.pids = []
@@ -79,7 +90,7 @@ class League():
     def export_state(self):
         return {key: getattr(self, key) for key in (
             'weights_dic', 'current_pid', 'pids', 'winrates',
-            'selfplay_winrate', 'n', 'last_num', 'kbest')}
+            'selfplay_winrate', 'n', 'last_num', 'kbest', 'sampling_strategy')}
 
     def restore_state(self, state):
         for key, value in state.items():
@@ -108,8 +119,13 @@ class League():
         weight = self.weights_dic[policy_id]
         return weight
     
+    def set_sampling_strategy(self, strategy):
+        opponent_probabilities([0.0], strategy, self.kbest)
+        self.sampling_strategy = strategy
+
     def select_opponent(self):
-        probs = kbsp([i.v for i in self.winrates[-self.last_num:]],k=self.kbest)
+        probs = opponent_probabilities([i.v for i in self.winrates[-self.last_num:]],
+                                       self.sampling_strategy, self.kbest)
         policy_id = np.random.choice(self.pids[-self.last_num:],p=probs)
         weight = self.get_weight(policy_id)
         return policy_id,weight

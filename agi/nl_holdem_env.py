@@ -23,6 +23,7 @@ class NlHoldemEnvWrapper(gym.Env):
         )
         if not 2 <= self.num_players <= 6:
             raise ValueError('num_players must be between 2 and 6')
+        self.betting_features = policy_config.get('env_config', {}).get('custom_options', {}).get('betting_features', False)
         self.action_num = 5
         
         # History slots per round and action_info channels depend on num_players
@@ -43,6 +44,8 @@ class NlHoldemEnvWrapper(gym.Env):
                 ),
             }
         
+        if self.betting_features:
+            space['betting_info'] = spaces.Box(low=0, high=np.inf, shape=(12,), dtype=np.float32)
         self.observation_space = spaces.Dict(space)
         self.action_space = spaces.Discrete(self.action_num)
 
@@ -101,14 +104,41 @@ class NlHoldemEnvWrapper(gym.Env):
             table_info[i] = [player.in_chips, player.status != PlayerStatus.FOLDED,
                              player.status == PlayerStatus.ALLIN,
                              i == self.env.game.dealer_id, i == self.my_agent()]
-        return {
+        result = {
             "table_info": table_info,
             "card_info": card_info,
             "action_info": action_info,
             "legal_moves": legal_actions_info,
             "extra_info": extra_info,
         }
-    
+        if self.betting_features:
+            result['betting_info'] = self._betting_information(obs[0]['raw_obs'])
+        return result
+
+    def _betting_information(self, raw):
+        # Only public state; use street commitments rather than total commitments
+        # because short all-ins from earlier streets can have smaller totals.
+        game = self.env.game
+        actor = int(raw['current_player'])
+        stacks = np.asarray(raw['stakes'], dtype=np.float32)
+        pot = float(sum(p.in_chips for p in game.players))
+        call = max(0.0, float(max(game.round.raised) - game.round.raised[actor]))
+        legal = [a.value for a in raw['legal_actions']]
+        if not legal:
+            call = 0.0
+        cost = min(call, float(stacks[actor]))
+        from rlcard.games.limitholdem import PlayerStatus
+        opponents = [i for i,p in enumerate(game.players)
+                     if i != actor and p.status != PlayerStatus.FOLDED]
+        effective = min(float(stacks[actor]), max((float(stacks[i]) for i in opponents), default=0.0))
+        public_cards = len(raw['public_cards'])
+        street = 0 if public_cards == 0 else public_cards - 2
+        return np.asarray([pot, call, cost, game.round.last_raise_amount,
+                           stacks[actor], effective, cost / max(pot + cost, 1.0),
+                           effective / max(pot, 1.0), len(opponents),
+                           street, any(a >= 2 for a in legal),
+                           any(game.players[i].status == PlayerStatus.ALLIN for i in opponents)], dtype=np.float32)
+
     def _log_action(self,action_ind):
         self.history[
             self.last_obs[0]["raw_obs"]["stage"].value
@@ -185,7 +215,7 @@ class NlHoldemEnvWithOpponent(NlHoldemEnvWrapper):
             
             from ray.rllib.algorithms.impala import ImpalaConfig
             dummy_config = ImpalaConfig().framework("torch").resources(num_gpus=0)
-            dummy_config.model = policy_config.get("model", {})
+            dummy_config.model.update(policy_config.get("model", {}))
             dummy_config.env_config = policy_config.get("env_config", {})
             dummy_config = dummy_config.api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
             dummy_config = dummy_config.to_dict() # old API compatibility for Policy constructor

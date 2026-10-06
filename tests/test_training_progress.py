@@ -23,3 +23,17 @@ def test_invalid_impala_batch_fails_before_training(size):
 
 def test_valid_impala_batch():
     validate_batches({'train_batch_size': 1000, 'minibatch_size': 200, 'rollout_fragment_length': 50})
+
+
+def test_uniform_opponents_keep_easy_historical_policies_in_training_mix():
+    import numpy as np
+    from agi.league import opponent_probabilities
+    rewards = [-10., -5., 0., 5., 10., 15.]
+    ranked = opponent_probabilities(rewards, 'ranked', k=2)
+    uniform = opponent_probabilities(rewards, 'uniform', k=2)
+    assert ranked[0] > ranked[-1]
+    np.testing.assert_allclose(uniform, np.full(6, 1 / 6))
+    assert uniform[-1] > ranked[-1]
+    assert uniform.sum() == pytest.approx(1)
+    with pytest.raises(ValueError):
+        opponent_probabilities([], 'uniform')
